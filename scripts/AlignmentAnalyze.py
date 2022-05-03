@@ -11,7 +11,7 @@ import os
 import matplotlib.pyplot as plt
 from plotnine import *
 import seaborn as sns
-
+import pymol
 
 script_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../bbmap/current/'))
 
@@ -62,7 +62,7 @@ def correct_pairs(in1, in2, bbmerge_location=f'java -cp {script_path} jgi.BBMerg
     return out1, out2
 
 
-def chunkit(wt_files, file_size, chunk_size):
+def chunkit(align_files, file_size, chunk_size, other_args=[]):
     # define functions for finding breakpoints
     def is_start_of_line(position):
         if position == 0:
@@ -79,7 +79,7 @@ def chunkit(wt_files, file_size, chunk_size):
         return f.tell()
     # Arguments for each chunk
     chunk_args = []
-    with open(wt_files, 'r') as f:
+    with open(align_files, 'r') as f:
         # Iterate over all chunks and construct arguments for `process_chunk`
         chunk_start = 0
         while chunk_start < file_size:
@@ -91,21 +91,21 @@ def chunkit(wt_files, file_size, chunk_size):
             if chunk_start == chunk_end:
                 chunk_end = get_next_line_position(chunk_end)
             # Save `process_chunk` arguments
-            args = (wt_files, chunk_start, chunk_end)
+            args = (align_files, chunk_start, chunk_end) + other_args
             chunk_args.append(args)
             # Move to the next chunk
             chunk_start = chunk_end
     return chunk_args
 
 
-def david_call_parallel_variants(sam_file, wt, app, root):
+def david_call_parallel_variants(sam_file, wt, outfile, app, root):
     cpu_count = mp.cpu_count()
     file_size = os.path.getsize(sam_file)
     chunk_size = file_size // cpu_count
-    chunk_args = chunkit(sam_file, file_size, chunk_size)
+    chunk_args = chunkit(sam_file, file_size, chunk_size, other_args=[wt, outfile, app, root])
     # parallel
     with mp.Pool(cpu_count) as pool:
-        answers = pool.starmap(wt_count, chunk_args)
+        answers = pool.starmap(david_call_variants, chunk_args)
     for answer in answers:
         correlations_wt = {k: correlations_wt.get(k, 0) + answer.get(k, 0) for k in set(correlations_wt) | set(answer)}
     wt_matrix = pd.DataFrame({'pair': list(correlations_wt.keys()), 'count': list(correlations_wt.values())})
@@ -220,7 +220,7 @@ def david_call_variants(sam_file, wt, outfile, app, root):
             #totalcounts.append(sorted_counts)  # this is really slow. Instead write to file
             file.write(','.join(sorted_counts) + '\n')
             mutation = sorted_counts[1:]
-            if all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation]):  # only recording if no indels were found
+            if app.count_indels.get() or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
                 for mut in sorted(mutation):
                     try:
                         mutation_dict[mut] += 1  # simple dictionary of mutations
@@ -567,6 +567,20 @@ def align_domain(app, root, sequencing_file, reference, domains_file, domain_out
     return domain_counts
 
 
+def map_structure(structure_file, matrix, min_q, max_q, name):
+    # pymol.finish_launching()
+    pymol.cmd.load(structure_file)
+    structure_name = os.path.basename(structure_file).split('.')[0]
+    pymol.stored.list = []
+    pymol.cmd.iterate("(name ca)", "stored.list.append(resi)")
+    matrix2 = matrix.iloc[:, 2:].reindex(columns=[int(x) for x in pymol.stored.list], fill_value=0).fillna(0)
+    pymol.stored.all = [float(x) for x in list(matrix2.iloc[21, :])]  # average row
+    pymol.cmd.alter(selection=structure_name, expression='b=0.0')
+    pymol.cmd.alter(selection=structure_name + ' and n. CA', expression='b=stored.all.pop(0)')
+    pymol.cmd.spectrum(expression='b', palette='red_white_green', selection=structure_name + ' and n. CA',
+                       minimum=min_q, maximum=max_q)
+    pymol.cmd.save(name + '_mapping.pse')
+
 def calc_enrichment(base, selected, name, mincount, structure_file):
     base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
     selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
@@ -587,6 +601,18 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
                 df.loc[select, 'score'] = score
                 df.loc[select, 'std_error'] = se
         df.to_csv(name, index=False)
+        df['mutation'] = df['position'].astype(str) + '_' + df['AA']
+        # create matrix
+        df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount),]
+        matrix = df.pivot_table(index='AA', columns='position', values='score', aggfunc=np.mean)
+        matrix['Average'] = matrix.mean(axis=1)
+        matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
+        matrix.loc['AveragePosition'] = matrix.mean(axis=0)
+        matrix.to_csv(name + '_matrix.csv')
+        # align to structure
+        if structure_file:
+            quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])
+            map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], name)
     else:
         # by variant
         inp_count = sum(df.loc[:, 'count_base'] + 1)
@@ -600,42 +626,26 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
             df.loc[select, 'std_error'] = se
         df.to_csv(name, index=False)
     # volcano plot
-    df['x'] = df['position'].astype(str) + '_' + df['AA']
-    ggplot(df) + aes(x='score', y='std_error') + geom_point() + theme_minimal() + geom_text(
-        data=df.loc[df['combined_score'] > 2]) + aes(x='score', y='std_error', label='x')
-    # create matrix
-    df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount), ]
-    #df = df.replace({'AA': codon})
-    #df['position'] = pd.to_numeric(df['position'])
-    matrix = df.pivot_table(index='AA', columns='position', values='score', aggfunc=np.mean)
-    matrix['Average'] = matrix.mean(axis=1)
-    matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
-    matrix.loc['AveragePosition'] = matrix.mean(axis=0)
-    matrix.to_csv(name + '_matrix.csv')
-    # align to structure
-    if structure_file:
-        quartile = matrix.loc['AveragePosition'].quantile([0.2, 0.80])
-        #structure_file = r"C:\Users\david.nedrud\Documents\NOTES\DATA\30-671858453\snoke_prediction.pdb"
-        import pymol
-        pymol.finish_launching()
-        pymol.stored.all = list(matrix.loc['AveragePosition'])
-        pymol.cmd.load(structure_file)
-        structure_name = os.path.basename(structure_file).split('.')[0]
-        pymol.cmd.alter(selection=structure_name, expression='b=0.0')
-        pymol.cmd.alter(selection=structure_name+' and n. CA', expression='b=stored.all.pop(0)')
-        pymol.cmd.spectrum(expression='b', palette='red_white_green', selection=structure_name+' and n. CA', minimum=quartile[0.2], maximum=quartile[0.8])
+    p = ggplot(df) + aes(x='score', y='std_error') + geom_point() + theme_minimal() + geom_text(
+        data=df.loc[df['score'] > 2]) + aes(x='score', y='std_error', label='mutation')
+    print(p)
+    print('Finished enrichment calculations')
 
 
 def combine(dataset, combineBy, name, threshold, structure_file):
     df = dataset[0]
-    for data in dataset[1:]:
-        df = pd.merge(df, data, on=['position', 'AA'])
-    df['x'] = df['position'].astype(str) + '_' + df['AA']
+    if 'position' in list(df.columns):
+        for data in dataset[1:]:
+            df = pd.merge(df, data, on=['position', 'AA'])
+        df['mutation'] = df['position'].astype(str) + '_' + df['AA']
+    else:
+        for data in dataset[1:]:
+            df = pd.merge(df, data, on='mutation')
     # correlation plot first
     if combineBy:
-        tmpdf = df.loc[(df[[x for x in df.columns if 'std_error' in x]] < threshold).apply(sum, axis=1)>len([x for x in df.columns if 'std_error' in x])/2]
+        tmpdf = df.loc[(df[[x for x in df.columns if 'std_error' in x]] < threshold).apply(sum, axis=1) > len([x for x in df.columns if 'std_error' in x])/2]
     else:
-        tmpdf = df.loc[(df[[x for x in df.columns if 'count' in x]] > threshold).apply(sum, axis=1)>len([x for x in df.columns if 'count' in x])/2]
+        tmpdf = df.loc[(df[[x for x in df.columns if 'count' in x]] > threshold).apply(sum, axis=1) > len([x for x in df.columns if 'count' in x])/2]
     g = sns.PairGrid(tmpdf[[x for x in df.columns if 'score' in x]])
     g.map_diag(sns.histplot)
     g.map_offdiag(sns.regplot)
@@ -643,39 +653,39 @@ def combine(dataset, combineBy, name, threshold, structure_file):
     plt.pause(1)
     if not combineBy:
         # sum count_base
-        df['count_base'] = df[[x for x in df.columns if 'count_base' in x]].sum(axis=1)
+        df['count_combined_base'] = df[[x for x in df.columns if 'count_base' in x]].sum(axis=1)
         # sum count_select
-        df['count_select'] = df[[x for x in df.columns if 'count_select' in x]].sum(axis=1)
+        df['count_combined_select'] = df[[x for x in df.columns if 'count_select' in x]].sum(axis=1)
         df = df.fillna(0)
         if 'position' in list(df.columns):
             # by AA position
             for i in df.position.unique():
                 selection = df.loc[df.position == i, :]
-                inp_count = sum(selection.loc[:, 'count_base'] + 1)
-                sel_count = sum(selection.loc[:, 'count_select'] + 1)
+                inp_count = sum(selection.loc[:, 'count_combined_base'] + 1)
+                sel_count = sum(selection.loc[:, 'count_combined_select'] + 1)
                 for select, row in selection.iterrows():
-                    inp_score = selection.loc[select, 'count_base'] + 1
-                    sel_score = selection.loc[select, 'count_select'] + 1
+                    inp_score = selection.loc[select, 'count_combined_base'] + 1
+                    sel_score = selection.loc[select, 'count_combined_select'] + 1
                     score = math.log(sel_score / sel_count) - math.log(inp_score / inp_count)
                     se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
                     df.loc[select, 'combined_score'] = score
                     df.loc[select, 'combined_std_error'] = se
         else:
             # by variant
-            inp_count = sum(df.loc[:, 'count_base'] + 1)
-            sel_count = sum(df.loc[:, 'count_select'] + 1)
+            inp_count = sum(df.loc[:, 'count_combined_base'] + 1)
+            sel_count = sum(df.loc[:, 'count_combined_select'] + 1)
             for select, row in df.iterrows():
-                inp_score = df.loc[select, 'count_base'] + 1
-                sel_score = df.loc[select, 'count_select'] + 1
+                inp_score = df.loc[select, 'count_combined_base'] + 1
+                sel_score = df.loc[select, 'count_combined_select'] + 1
                 score = math.log(sel_score / sel_count) - math.log(inp_score / inp_count)
                 se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
                 df.loc[select, 'combined_score'] = score
                 df.loc[select, 'combined_std_error'] = se
-        df1 = df.loc[(df['count_base'] > threshold) | (df['count_select'] > threshold), ]
+        df1 = df.loc[(df['count_combined_base'] > threshold) | (df['count_combined_select'] > threshold), ]
+        df['log_count'] = np.log10(df['count_combined_base'] + df['count_combined_select'])
         # volcano plot
-        df['total_num'] = math.log(df['count_base']+df['count_select'], 10)
-        p = ggplot(df) + aes(x='combined_score', y='total_num') + geom_point() + theme_minimal() + \
-            geom_text(data=df.loc[df['combined_score'] > 2]) + aes(x='combined_score', y='total_num', label='x')
+        p = ggplot(df) + aes(x='combined_score', y='log_count') + geom_point() + theme_minimal() + \
+            geom_text(data=df.loc[df['combined_score'] > 2]) + aes(x='combined_score', y='log_count', label='mutation')
         print(p)
     else:
         for index, row in df.iterrows():
@@ -698,13 +708,13 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                     df.loc[index, 'combined_score'] = np.nan
                     df.loc[index, 'combined_std_error'] = np.nan
                     df.loc[index, 'combined_eps'] = np.nan
-        df1 = df.loc[df['combined_std_error'] < threshold,]
+        df1 = df.loc[df['combined_std_error'] < threshold, ]
         # volcano plot
         p = ggplot(df) + aes(x='combined_score', y='combined_std_error') + geom_point() + theme_minimal() + \
             geom_text(data=df.loc[df['combined_score'] > 2]) + aes(x='combined_score', y='combined_std_error',
-                                                                   label='x') + scale_y_reverse()
+                                                                   label='mutation') + scale_y_reverse()
         print(p)
-    df.to_csv(name, index=False)
+    df.to_csv(name+'/combined_results.csv', index=False)
     # create matrix
     if 'position' in df1.columns:
         matrix = df1.pivot_table(index='AA', columns='position', values='combined_score', aggfunc=np.mean)
@@ -713,32 +723,25 @@ def combine(dataset, combineBy, name, threshold, structure_file):
         matrix['Average'] = matrix.mean(axis=1, skipna=True)
         matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
         matrix.loc['AveragePosition'] = matrix.mean(axis=0, skipna=True)
-        matrix.to_csv(name+'_matrix.csv')
+        matrix.to_csv(name+'/combined_matrix.csv')
         # align to structure
         if structure_file:
             quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])
-            #structure_file = r"C:\Users\david.nedrud\Documents\NOTES\DATA\30-671858453\snoke_prediction.pdb"
-            import pymol
-            pymol.finish_launching()
-            pymol.stored.all = list(matrix.loc['AveragePosition'][1:])
-            pymol.cmd.load(structure_file)
-            structure_name = os.path.basename(structure_file).split('.')[0]
-            pymol.cmd.alter(selection=structure_name, expression='b=0.0')
-            pymol.cmd.alter(selection=structure_name + ' and n. CA', expression='b=stored.all.pop(0)')
-            pymol.cmd.spectrum(expression='b', palette='red_white_green', selection=structure_name + ' and n. CA', minimum=quartile[0.1], maximum=quartile[0.9])
+            map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], name)
+    print('Finished Combining Scores')
 
-# function for recursive maximum likelihood estimator
-def rml_estimator(y, sigma2i, iterations=500):
-    iter = 1
+
+def rml_estimator(y, sigma2i, iterations=500):  # function for recursive maximum likelihood estimator
+    iteration = 1
     eps = 100
     sigma2ML = sum((y - np.mean(y)) ** 2) / (len(y) - 1)
-    while (iter<iterations):
-        if (eps<0.0001 and iter > 50):  # must get to 50 iterations
+    while iteration < iterations:
+        if eps < 0.0001 and iteration > 50:  # must get to 50 iterations
             break
         sigma2ML_new = sigma2ML*sum(((y - np.mean(y)) ** 2) * (sigma2ML+sigma2i)**-2) / (sum((sigma2ML+sigma2i)**-1) - (sum((sigma2ML+sigma2i)**-2)/sum((sigma2ML+sigma2i)**-1)))
         eps = abs(sigma2ML - sigma2ML_new)
         sigma2ML = sigma2ML_new
-        iter = iter+1
+        iteration = iteration+1
         var_betaML = 1 / sum(1 / (sigma2i + sigma2ML))
     return [var_betaML, eps]
 

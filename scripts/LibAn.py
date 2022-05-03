@@ -1,6 +1,5 @@
 # python
 import AlignmentAnalyze
-import os
 import time
 import Bio
 import Bio.Entrez
@@ -12,12 +11,18 @@ from tkinter import filedialog
 from tkinter.ttk import Progressbar
 import pandas as pd
 import os
+import re
 
 
-def run():
-    # Sanity checks
-    assert os.path.isfile(app.seq_file), f"given sequencing file, '{app.seq_file}', does not exist"
+def run(sequencing_file=None, paired_sequencing_file=None):
+    # variables from arguments
     assert os.path.isfile(app.wt_file), f"given refrence/wildtype file name '{app.wtseq}' does not exist!"
+    wt_seq = Bio.SeqIO.read(app.wt_file, "fasta")
+    if sequencing_file==None or paired_sequencing_file==None:
+        sequencing_file = app.seq_file
+        paired_sequencing_file = app.paired_file
+    # Sanity checks
+    assert os.path.isfile(sequencing_file), f"given sequencing file, '{sequencing_file}', does not exist"
     assert Bio.SeqIO.read(app.wt_file, "fasta").seq.translate(), f"given refrence/wildtype sequence file " \
                                                                 f"'{app.wt_file}' is not a valid FASTA file " \
                                                                 f"containing one unambiguous DNA sequence!"
@@ -26,20 +31,11 @@ def run():
     assert app.aamuts_file is None or os.path.isfile(app.aamuts_file), f"given domains file, '{app.aamuts_file}', does not exist"
     assert (app.muts_file or app.domains_file or app.aamuts_file or not app.deep_check.get()), \
         "Targeted analysis cannot be done if neither mutations file nor domains files are provided"
-    #assert not app.correlations_check.get() or app.aamuts_file or app.muts_file or app.domains_file, \
-    #    "Cannot analyze correlations between designed mutations if designed mutations are not provided in either " \
-    #    "mutations file, amino acid mutation file, and/or domains file"
     assert app.control_correlations_file is None or os.path.isfile(app.control_correlations_file), \
         f"given refrence correlations file, '{app.control_correlations_file}', does not exist"
 
-    # variables from arguments
-    wt_seq = Bio.SeqIO.read(app.wt_file, "fasta")
-    sequencing_file = app.seq_file
-    paired_sequencing_file = app.paired_file
-
     # output files
-    rootname = os.path.splitext(app.seq_file)[0]
-    log_file = f'{rootname}_logfile.log'
+    rootname = os.path.splitext(sequencing_file)[0].split('.fastq')[0]
 
     # initialize some variables
     programstart = time.time()
@@ -50,13 +46,10 @@ def run():
 
     ### Process Sequencing Records ###
     # merge paired reads
-    if paired_sequencing_file and not os.path.exists(rootname.split('.fastq')[0]+'_corrected.fastq.gz'):
+    if paired_sequencing_file and not os.path.exists(rootname+'_corrected.fastq.gz'):
         app.output.insert('end', 'Merging paired reads.\n')
         root.update()
         sequencing_file, paired_sequencing_file = AlignmentAnalyze.correct_pairs(sequencing_file, paired_sequencing_file)
-        # mergedfile = f"{rootname}_merged.{seqreadtype}"
-        # AlignmentAnalyze.merge_pairs(sequencing_file, paired_sequencing_file, mergedfile)
-        # sequencing_file = mergedfile
     else:
         print('Sequencing files already merged. Using existing corrected files')
 
@@ -105,11 +98,26 @@ def run():
 
 
 def enrichment():
-    AlignmentAnalyze.calc_enrichment(app.base, app.select, app.pickb.get(), app.picks.get(), app.selectcount.split('.')[0]+'_results.csv', int(app.mincount.get()), app.pdb)
+    AlignmentAnalyze.calc_enrichment(app.base, app.select, app.selectcount.split('.fastq')[0] + '_results.csv', int(app.mincount.get()), app.pdb)
+
+
+def run_batch():
+    # find paired_files
+    batch_folder = filedialog.askdirectory(title="Select folder containing fastq files")
+    paired_files = {}
+    for file in os.listdir(batch_folder):
+        if '.fastq' in file and 'corrected' not in file:
+            try:
+                paired_files[re.sub(r'_R\d_', '', file)].append(os.path.join(batch_folder, file))
+            except KeyError:
+                paired_files[re.sub(r'_R\d_', '', file)] = [os.path.join(batch_folder, file)]
+    for key, value in paired_files.items():
+        assert len(value) < 3, f"Too many files linked to '{value[0]}'"
+        run(sequencing_file=value[0], paired_sequencing_file=value[1])
 
 
 def combine():
-    AlignmentAnalyze.combine(app.datasets, app.combineBy.get(), os.path.join(os.path.dirname(app.tmpfile), 'combined_results.csv'), float(app.mincount.get()), app.pdb)
+    AlignmentAnalyze.combine(app.datasets, app.combineBy.get(), app.dirname, float(app.mincount.get()), app.pdb)
 
 
 class Application(tk.Frame):
@@ -130,6 +138,7 @@ class Application(tk.Frame):
         self.domain_check = tk.IntVar()
         self.AA_check = tk.IntVar()
         self.variant_check = tk.IntVar()
+        self.count_indels = tk.IntVar()
 
         tk.Label(self, text='NGS alignment', font=("Arial", 16, 'bold')).grid(column=0)
         self.seq = tk.Button(self, text='Input sequencing reads (fastq)', command=self.browse_seq)
@@ -163,6 +172,9 @@ class Application(tk.Frame):
         self.correlation = tk.Checkbutton(self, text='Correlation analysis', variable=self.correlations_check)
         self.correlation.grid(column=0)
 
+        self.indel = tk.Checkbutton(self, text='InDel analysis', variable=self.count_indels)
+        self.indel.grid(column=0)
+
         tk.Label(self, text='Other').grid(column=0)
         self.mut = tk.Button(self, text='designed mutation NT list (csv)', command=self.browse_mut)
         self.mut.grid(column=0)
@@ -180,9 +192,12 @@ class Application(tk.Frame):
         self.domains.grid(column=0)
         self.domains_file = None
 
-        tk.Label(self, text='Run').grid(column=0)
+        tk.Label(self, text='Run', font='bold').grid(column=0)
         self.run = tk.Button(self, text='Run analysis', command=run)
         self.run.grid(column=0)
+        tk.Label(self, text='Run Batch', font='bold)').grid(column=0)
+        self.run_batch = tk.Button(self, text='Run batch analysis', command=run_batch)
+        self.run_batch.grid(column=0)
 
         tk.Label(self, text='Count Barcodes').grid(column=0)
         self.barcode = tk.Button(self, text='Select fastq for barcode count', command=self.browse_barcode)
@@ -234,6 +249,7 @@ class Application(tk.Frame):
             self.seq_label.config(text=os.path.basename(self.seq_file))
         else:
             self.seq_file = None
+
     def browse_paired(self):
         self.paired_file = filedialog.askopenfilename(title="Select a File")
         if self.paired_file != '':
@@ -241,36 +257,42 @@ class Application(tk.Frame):
             self.paired_label.config(text=os.path.basename(self.paired_file))
         else:
             self.paired_file = None
+
     def browse_wt(self):
         self.wt_file = filedialog.askopenfilename(title="Select a File")
         if self.wt_file != '':
             self.wtseq.config(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.wt_file = None
+
     def browse_mut(self):
         self.muts_file = filedialog.askopenfilename(title="Select a File")
         if self.muts_file != '':
             self.mut.config(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.muts_file = None
+
     def browse_mutaa(self):
         self.aamuts_file = filedialog.askopenfilename(title="Select a File")
         if self.aamuts_file != '':
             self.mutaa.config(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.aamuts_file = None
+
     def browse_domains(self):
         self.domains_file = filedialog.askopenfilename(title="Select a File")
         if self.domains_file != '':
             self.domains.config(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.domains_file = None
+
     def browse_correlation(self):
         self.control_correlations_file = filedialog.askopenfilename(title="Select a File")
         if self.control_correlations_file != '':
             self.control_correlations.config(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.control_correlations_file = None
+
     def browse_base(self):
         self.basecount = filedialog.askopenfilename(title="Select a File")
         if self.basecount != '':
@@ -279,6 +301,7 @@ class Application(tk.Frame):
             self.w.config(text=os.path.basename(self.basecount))
         else:
             self.basecount = None
+
     def browse_select(self):
         self.selectcount = filedialog.askopenfilename(title="Select a File")
         if self.selectcount != '':
@@ -296,10 +319,12 @@ class Application(tk.Frame):
             self.pdb = None
 
     def browse_data(self):
-        self.tmpfile = filedialog.askopenfilename(title="Select a File")
-        if self.tmpfile != '':
-            self.datasets.append(pd.read_csv(self.tmpfile))
-            app.output.insert('end', os.path.basename(self.tmpfile)+'\n')
+        tmpfile = filedialog.askopenfilenames(title="Select results files")
+        if tmpfile != '':
+            for file in tmpfile:
+                self.datasets.append(pd.read_csv(file))
+                app.output.insert('end', os.path.basename(file)+'\n')
+                self.dirname = os.path.dirname(file)
             root.update()
 
     def browse_barcode(self):
@@ -319,6 +344,6 @@ class Application(tk.Frame):
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry('900x750')
+    root.geometry('900x850')
     app = Application(master=root)
     app.mainloop()
