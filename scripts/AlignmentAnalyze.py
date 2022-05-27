@@ -55,11 +55,11 @@ def correct_pairs(in1, in2, bbmerge_location=f'java -cp {script_path} jgi.BBMerg
     else:
         out1 = os.path.splitext(in1)[0]+'_corrected'+os.path.splitext(in1)[1]
         out2 = os.path.splitext(in2)[0]+'_corrected'+os.path.splitext(in2)[1]
-    bbmerge_command += f' in1={in1} in2={in2} out1={out1} out2={out2} ecco mix'
+    bbmerge_command += f' in1={in1} in2={in2} out1={out1} ecco mix'
     print(bbmerge_command)
     ret = os.system(bbmerge_command)
     assert ret == 0
-    return out1, out2
+    return out1
 
 
 def chunkit(align_files, file_size, chunk_size, other_args=[]):
@@ -176,7 +176,7 @@ def david_call_variants(sam_file, wt, outfile, app, root):
                             if read + i_sub - codon_diff + 3 < len(r3[9]) and read + i_sub - codon_diff >= 0 and 'N' not in i_codon and '-' not in i_codon:
                                 # only record if confident about entire codon
                                 quality_codon = r3[10][read + i_sub - codon_diff:read + i_sub - codon_diff + 3]
-                                if ord(quality_codon[0])-33 > quality_nt and ord(quality_codon[1])-33 > quality_nt and ord(quality_codon[2])-33>quality_nt:
+                                if all([ord(x)-33 > quality_nt for x in quality_codon]):
                                     tmpcounts.add(str(int((ref+i_sub-codon_diff)/3+1))+'_' + i_codon)
                         ref += int(cigar[0])
                         read += int(cigar[0])
@@ -378,7 +378,7 @@ def align_all_bbmap(sequencing_file, reference, sam_file, bbmap_script=f'java -c
     assert ret == 0
 
 
-def align_domain(app, root, sequencing_file, reference, domains_file, domain_out_file, bbmap_script=r'java -cp ../bbmap/current/ align2.BBMap', paired_sequencing_file=None):
+def align_domain(app, root, sequencing_file, reference, domains_file, domain_out_file):
     # read domains
     domains = list(Bio.SeqIO.parse(domains_file, 'fasta'))
     # generate fragments small enough to find ends but large enough to distinguish from other domains
@@ -403,31 +403,18 @@ def align_domain(app, root, sequencing_file, reference, domains_file, domain_out
     root.update()
     fraction = 100/len(domains)
     for domain in domains:
-        #fixed_5p = domain.seq[:end5]
-        #fixed_3p = domain.seq[end3:]
         domain_reference = os.path.join(os.path.dirname(domains_file), domain.id + '.fasta')
         with open(domain_reference, 'w') as outfile:
             outfile.write(f">{domain.id}\n{domain.seq}\n")
             outfile.close()
-        # run alignment
-        # if not os.path.exists(domain_out):
-        #     if paired_sequencing_file:
-        #         command = f"{bbmap_script} ref={domain_reference} in={sequencing_file} in2={paired_sequencing_file} outm={domain_out} local vslow minid=0 k=8 maxindel=10 startpad=8000 stoppad=8000 tipsearch=10 padding=10"
-        #     else:
-        #         command = f"{bbmap_script} ref={domain_reference} in={sequencing_file} outm={domain_out} local vslow minid=0 k=8 maxindel=10 startpad=8000 stoppad=8000 tipsearch=10 padding=10"
-        #     print(command)
-        #     ret = os.system(command)
-        #     assert ret == 0
-        # os.remove(domain_reference)
         print('##### Retaining reads that match insert #####')
         insert_filtered_fnames = os.path.join(os.path.dirname(domains_file), domain.id + '_insert_filtered.fastq')
         command = [f'java -cp {script_path} jgi.BBDuk',
                    'ref=%s' % domain_reference,
                    'in=%s' % sequencing_file,
-                   'in2=%s' % paired_sequencing_file,
                    'outm=%s' % insert_filtered_fnames,
                    'mink=%d' % end5,
-                   'hdist=0 mm=f']
+                   'hdist=0 mm=f maq=20']
         print('Running: \n\t%s' % ' '.join(command))
         ret = os.system(' '.join(command))
         assert ret == 0, 'bbduk.sh failed for %s!' % domain_reference
@@ -438,123 +425,114 @@ def align_domain(app, root, sequencing_file, reference, domains_file, domain_out
                    'ref=%s' % reference,
                    'in=%s' % insert_filtered_fnames,
                    'outm=%s' % insert_bbone_filtered_fnames,
-                   'k=%d' % 12,
-                   'hdist=1 mm=f']
+                   'mink=%d' % 12,
+                   'hdist=1 mm=f ']
         print('Running: \n\t%s' % ' '.join(command))
         ret = os.system(' '.join(command))
         assert ret == 0, 'bbduk.sh failed for %s!' % reference
 
-        print('##### Masking insert in reads #####')
-        filtered_masked_fnames = os.path.join(os.path.dirname(domains_file), domain.id + '_masked.fastq')
-        command = [f'java -cp {script_path} jgi.BBDuk',
+        print('##### Find Domain position in read #####')
+        filtered_masked_fnames = os.path.join(os.path.dirname(domains_file), domain.id + '_domain.sam')
+        command = [f'java -cp {script_path} align2.BBMapPacBioSkimmer',
                    'ref=%s' % domain_reference,
                    'in=%s' % insert_bbone_filtered_fnames,
                    'out=%s' % filtered_masked_fnames,
-                   'mink=%d' % end5,
-                   'kmask=N hdist=1 mm=f']
+                   'touppercase=t nodisk overwrite local vslow minratio=0.01 k=8']
         ret = os.system(' '.join(command))
-        assert ret == 0, 'bbduk.sh failed for %s!' % domain_reference
-
-        # print('##### Trimming insert from reads #####')
-        # trimmed_5p_fnames = os.path.join(os.path.dirname(domains_file), domain.id + '_trimmed.filtered')
-        # GrepTrimMulti(pattern_5p, filtered_masked_fnames, trimmed_5p_fnames,
-        #               trim_after=True, trim_match=True)
+        assert ret == 0, 'bbmap.sh failed for %s!' % domain_reference
 
         print('##### Aligning to backbone #####')
         aligned_fnames = os.path.join(os.path.dirname(domains_file), domain.id + '_filtered_trimmed_5p_aligned.sam')
         command = [f'java -cp {script_path} align2.BBMap',
                    'ref=%s' % reference,
-                   'in=%s' % filtered_masked_fnames,
+                   'in=%s' % insert_bbone_filtered_fnames,
                    'out=%s' % aligned_fnames,
-                   'touppercase=t nodisk overwrite minratio=0.1']
+                   'touppercase=t nodisk overwrite local minratio=0.1']
         ret = os.system(' '.join(command))
         assert ret == 0, 'bbmap.sh failed for %s!' % reference
 
         # write to csv and create table
         read_length = [100000, 0]
         file_out = open(domain_reference.split('.fasta')[0] + '.csv', 'w')
-        if os.path.exists(aligned_fnames):
-            with open(aligned_fnames, 'r') as file:
-                for row in file:
-                    if '@' in row[0]:
-                        continue
-                    # if read is paired to the next file
-                    tmp_r1 = row.split('\t')
-                    if tmp_r1[6] == '=':
-                        tmp_r2 = next(file).split('\t')
-                        if tmp_r1[0] == tmp_r2[0]:  # paired reads have the same name
-                            read_list = [tmp_r1, tmp_r2]
-                        else:
-                            raise Exception('Paired read not found')
-                    else:  # only if there is one read
-                        read_list = [tmp_r1]
-                    tmpcounts = {tmp_r1[0]}  # initialize name
-                    for r3 in read_list:
-                        if (bin(int(r3[1]))[::-1][1] or bin(int(r3[1]))[::-1][3]) and int(r3[4]) > quality:
-                            if all([tmp == 'N' for tmp in r3[9][r3[9].find('N'):r3[9].rfind('N')]]):  # make sure no mutations or gaps
-                                # set index
-                                ref = int(r3[3]) - 1  # subtract 1 for python numbering
-                                read_length[0] = min(read_length[0], ref)
-                                read = 0
-                                # cycle through each codon until end of read or end of reference sequence
-                                fragment_cigar = list(filter(None, re.split(r'(\d+)', r3[5])))
-                                codon_start = ref + ref % 3
-                                codon_end = ref
-                                for cigar in [fragment_cigar[ii:ii + 2] for ii in range(0, len(fragment_cigar), 2)]:
-                                    codon_end += int(cigar[0])
-                                    if 'X' == cigar[1]:
-                                        # this is a substitution
-                                        ref += int(cigar[0])
-                                        read += int(cigar[0])
-                                    elif '=' == cigar[1]:
-                                        # this is a perfect match
-                                        ref += int(cigar[0])
-                                        read += int(cigar[0])
-                                    elif 'D' == cigar[1]:
-                                        # this is a deletion
-                                        # insert '-' for gap
-                                        r3[9] = r3[9][:read] + '-' * int(cigar[0]) + r3[9][read:]
-                                        r3[10] = r3[10][:read] + '-' * int(cigar[0]) + r3[9][read:]
-                                        read += int(cigar[0])
-                                        ref += int(cigar[0])
-                                    elif 'I' == cigar[1]:
-                                        # this is an insertion
-                                        read += int(cigar[0])
-                                    elif 'S' == cigar[1]:
-                                        # soft clipping
-                                        read += int(cigar[0])
-                                    elif 'M' == cigar[1]:
-                                        # bad read (N) - this is the domain
-                                        if int(cigar[0]) > end5:
-                                            domain_position = int(ref / 3) + 1
-                                            if read == 0 or int(cigar[0]) > len(domain.seq):
-                                                domain_position = int((ref + int(cigar[0]) - len(domain.seq))/3) + 1
-                                            try:
-                                                domain_counts.loc[domain_position, domain.id] += 1
-                                            except KeyError:
-                                                domain_counts.loc[domain_position, domain.id] = 1
-                                            tmpcounts.add(str(domain_position))
-                                        ref += int(cigar[0])
-                                        read += int(cigar[0])
-                                    else:
-                                        raise TypeError('Cigar format not found')
-                                if codon_end - codon_start >= 3:
-                                    # make sure this doesnt exceed the length of the gene using min
-                                    wt_range = range(int(codon_start / 3) + 1, min(int(codon_end/3) + 1, int(len(wt) / 3)), 1)  # need to add 1 for range
-                                    for wt_i in wt_range:
-                                        wt_count[wt_i] += 1
-                    if len(tmpcounts) > 1:  # only record if mutations found
-                        # append data
-                        sorted_counts = sorted(tmpcounts, reverse=True)
-                        # totalcounts.append(sorted_counts)  # this is really slow. Instead write to file
-                        file_out.write(','.join(sorted_counts) + '\n')
-            os.remove(aligned_fnames)
-        else:
-            print(aligned_fnames+' Failed Alignment!')
-        os.remove(insert_filtered_fnames)
-        os.remove(insert_bbone_filtered_fnames)
-        os.remove(filtered_masked_fnames)
-        os.remove(domain_reference)
+        with open(filtered_masked_fnames, 'r') as file:
+            for row in file:
+                if '@' in row[0]:
+                    continue
+                # if read is paired to the next file
+                tmp_r1 = row.split('\t')
+                if tmp_r1[6] == '=':
+                    tmp_r2 = next(file).split('\t')
+                    if tmp_r1[0] == tmp_r2[0]:  # paired reads have the same name
+                        read_list = [tmp_r1, tmp_r2]
+                    else:
+                        raise Exception('Paired read not found')
+                else:  # only if there is one read
+                    read_list = [tmp_r1]
+                tmpcounts = {tmp_r1[0]}  # initialize name
+                for r3 in read_list:
+                    if (bin(int(r3[1]))[::-1][1] or bin(int(r3[1]))[::-1][3]) and '*' not in r3[5]: # make sure it aligned
+                        if all([tmp == 'N' for tmp in r3[9][r3[9].find('N'):r3[9].rfind('N')]]):  # make sure no mutations or gaps
+                            # set index
+                            ref = int(r3[3]) - 1  # subtract 1 for python numbering
+                            read_length[0] = min(read_length[0], ref)
+                            read = 0
+                            # cycle through each codon until end of read or end of reference sequence
+                            fragment_cigar = list(filter(None, re.split(r'(\d+)', r3[5])))
+                            codon_start = ref + ref % 3
+                            codon_end = ref
+                            for cigar in [fragment_cigar[ii:ii + 2] for ii in range(0, len(fragment_cigar), 2)]:
+                                codon_end += int(cigar[0])
+                                if 'X' == cigar[1]:
+                                    # this is a substitution
+                                    ref += int(cigar[0])
+                                    read += int(cigar[0])
+                                elif '=' == cigar[1]:
+                                    # this is a perfect match
+                                    ref += int(cigar[0])
+                                    read += int(cigar[0])
+                                elif 'D' == cigar[1]:
+                                    # this is a deletion
+                                    # insert '-' for gap
+                                    r3[9] = r3[9][:read] + '-' * int(cigar[0]) + r3[9][read:]
+                                    r3[10] = r3[10][:read] + '-' * int(cigar[0]) + r3[9][read:]
+                                    read += int(cigar[0])
+                                    ref += int(cigar[0])
+                                elif 'I' == cigar[1]:
+                                    # this is an insertion
+                                    read += int(cigar[0])
+                                elif 'S' == cigar[1]:
+                                    # soft clipping
+                                    read += int(cigar[0])
+                                elif 'M' == cigar[1]:
+                                    # bad read (N) - this is the domain
+                                    if int(cigar[0]) > end5:
+                                        domain_position = int(ref / 3) + 1
+                                        if read == 0 or int(cigar[0]) > len(domain.seq):
+                                            domain_position = int((ref + int(cigar[0]) - len(domain.seq))/3) + 1
+                                        try:
+                                            domain_counts.loc[domain_position, domain.id] += 1
+                                        except KeyError:
+                                            domain_counts.loc[domain_position, domain.id] = 1
+                                        tmpcounts.add(str(domain_position))
+                                    ref += int(cigar[0])
+                                    read += int(cigar[0])
+                                else:
+                                    raise TypeError('Cigar format not found')
+                            if codon_end - codon_start >= 3:
+                                # make sure this doesnt exceed the length of the gene using min
+                                wt_range = range(int(codon_start / 3) + 1, min(int(codon_end/3) + 1, int(len(wt) / 3)), 1)  # need to add 1 for range
+                                for wt_i in wt_range:
+                                    wt_count[wt_i] += 1
+                if len(tmpcounts) > 1:  # only record if mutations found
+                    # append data
+                    sorted_counts = sorted(tmpcounts, reverse=True)
+                    # totalcounts.append(sorted_counts)  # this is really slow. Instead write to file
+                    file_out.write(','.join(sorted_counts) + '\n')
+        #os.remove(aligned_fnames)
+        #os.remove(insert_filtered_fnames)
+        #os.remove(insert_bbone_filtered_fnames)
+        #os.remove(filtered_masked_fnames)
+        #os.remove(domain_reference)
         root.update_idletasks()
         app.progress['value'] += fraction
         root.update()
@@ -589,8 +567,10 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
     df = df.fillna(0)
     if 'position' in list(df.columns):
         # by AA position
+        wt_seq = pd.DataFrame()
         for i in df.position.unique():
             selection = df.loc[df.position == i, :]
+            wt_seq.loc['WT_AA', i] = (selection.loc[selection['count_base'].idxmax(), 'AA'])
             inp_count = sum(selection.loc[:, 'count_base']+1)
             sel_count = sum(selection.loc[:, 'count_select']+1)
             for select, row in selection.iterrows():
@@ -603,11 +583,16 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
         df.to_csv(name, index=False)
         df['mutation'] = df['position'].astype(str) + '_' + df['AA']
         # create matrix
-        df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount),]
+        df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount), ]
         matrix = df.pivot_table(index='AA', columns='position', values='score', aggfunc=np.mean)
+        for i in len(matrix):
+            matrix.loc[matrix.iloc['AA', i], i] = np.nan
         matrix['Average'] = matrix.mean(axis=1)
         matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
-        matrix.loc['AveragePosition'] = matrix.mean(axis=0)
+        aa_order = ['A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
+        matrix = matrix.reindex(aa_order)
+        matrix.loc['AveragePosition'] = matrix.drop('*').mean(axis=0)
+        matrix = matrix.append(wt_seq)
         matrix.to_csv(name + '_matrix.csv')
         # align to structure
         if structure_file:
@@ -659,8 +644,10 @@ def combine(dataset, combineBy, name, threshold, structure_file):
         df = df.fillna(0)
         if 'position' in list(df.columns):
             # by AA position
+            wt_seq = pd.DataFrame()
             for i in df.position.unique():
                 selection = df.loc[df.position == i, :]
+                wt_seq.loc['WT_AA', i] = (selection.loc[selection['count_base'].idxmax(), 'AA'])
                 inp_count = sum(selection.loc[:, 'count_combined_base'] + 1)
                 sel_count = sum(selection.loc[:, 'count_combined_select'] + 1)
                 for select, row in selection.iterrows():
@@ -681,7 +668,7 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                 se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
                 df.loc[select, 'combined_score'] = score
                 df.loc[select, 'combined_std_error'] = se
-        df1 = df.loc[(df['count_combined_base'] > threshold) | (df['count_combined_select'] > threshold), ]
+        df = df.loc[(df['count_combined_base'] > threshold) | (df['count_combined_select'] > threshold), ]
         df['log_count'] = np.log10(df['count_combined_base'] + df['count_combined_select'])
         # volcano plot
         p = ggplot(df) + aes(x='combined_score', y='log_count') + geom_point() + theme_minimal() + \
@@ -708,7 +695,13 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                     df.loc[index, 'combined_score'] = np.nan
                     df.loc[index, 'combined_std_error'] = np.nan
                     df.loc[index, 'combined_eps'] = np.nan
-        df1 = df.loc[df['combined_std_error'] < threshold, ]
+        if 'position' in list(df.columns):
+            # by AA position
+            wt_seq = pd.DataFrame()
+            for i in df.position.unique():
+                selection = df.loc[df.position == i, :]
+                wt_seq.loc['WT_AA', i] = (selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA'])
+        df = df.loc[df['combined_std_error'] < threshold, ]
         # volcano plot
         p = ggplot(df) + aes(x='combined_score', y='combined_std_error') + geom_point() + theme_minimal() + \
             geom_text(data=df.loc[df['combined_score'] > 2]) + aes(x='combined_score', y='combined_std_error',
@@ -716,13 +709,16 @@ def combine(dataset, combineBy, name, threshold, structure_file):
         print(p)
     df.to_csv(name+'/combined_results.csv', index=False)
     # create matrix
-    if 'position' in df1.columns:
-        matrix = df1.pivot_table(index='AA', columns='position', values='combined_score', aggfunc=np.mean)
+    if 'position' in df.columns:
+        matrix = df.pivot_table(index='AA', columns='position', values='combined_score', aggfunc=np.mean)
         missing_positions = list(set(range(1, max(df['position'])+1)).difference(matrix.columns))
         matrix[missing_positions] = np.nan
         matrix['Average'] = matrix.mean(axis=1, skipna=True)
         matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
-        matrix.loc['AveragePosition'] = matrix.mean(axis=0, skipna=True)
+        aa_order = ['A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
+        matrix = matrix.reindex(aa_order)
+        matrix.loc['AveragePosition'] = matrix.drop('*').mean(axis=0, skipna=True)
+        matrix = matrix.append(wt_seq)
         matrix.to_csv(name+'/combined_matrix.csv')
         # align to structure
         if structure_file:
@@ -750,15 +746,21 @@ def find_barcodes(sequencing_file, paired_sequencing_file, adapters):
     print('##### Determining Barcode Location #####')
     if paired_sequencing_file:
         out1 = sequencing_file.split('.fastq.gz')[0]+'_corrected.fastq.gz'
-        out2 = paired_sequencing_file.split('.fastq.gz')[0] + '_corrected.fastq.gz'
         command = [f'java -cp {script_path} jgi.BBMerge',
                    'in=%s' % sequencing_file,
                    'in2=%s' % paired_sequencing_file,
                    'out1=%s' % out1,
-                   'out2=%s' % out2,
                    "adapters=%s" % adapters]
         ret = os.system(' '.join(command))
         assert ret == 0, 'finding barcodes failed!'
+    # filter reads that align to adapters
+    out2 = os.path.join(os.path.dirname(sequencing_file), 'filtered_reads.fastq')
+    command = [f'java -cp {script_path} jgi.BBDuk',
+               'in=%s' % out1,
+               'ref=%s' % adapters,
+               'outm=%s' % out2]
+    ret = os.system(' '.join(command))
+    assert ret == 0, 'Right trimming failed!'
     with open(adapters, 'r') as file:
         next(file)
         left_adapter = next(file).strip()
@@ -766,7 +768,7 @@ def find_barcodes(sequencing_file, paired_sequencing_file, adapters):
         right_adapter = next(file).strip()
     tmpbarcodes = os.path.join(os.path.dirname(sequencing_file), 'tmp_barcodes.fastq')
     command = [f'java -cp {script_path} jgi.BBDuk',
-               'in=%s' % sequencing_file,
+               'in=%s' % out2,
                'literal=%s' % left_adapter,
                'out=%s' % tmpbarcodes,
                'ktrim=l k=23 mink=11 hdist=1 tpe tbo']
@@ -777,7 +779,7 @@ def find_barcodes(sequencing_file, paired_sequencing_file, adapters):
                'in=%s' % tmpbarcodes,
                'literal=%s' % right_adapter,
                'out=%s' % barcodes,
-               'ktrim=r k=23 mink=11 hdist=1 tpe tbo']
+               'ktrim=r k=23 mink=11 hdist=1 tpe tbo trimq=20']
     ret = os.system(' '.join(command))
     assert ret == 0, 'Left trimming failed!'
     ## read barcodes and count

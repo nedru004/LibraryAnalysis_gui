@@ -47,9 +47,9 @@ def run(sequencing_file=None, paired_sequencing_file=None):
     ### Process Sequencing Records ###
     # merge paired reads
     if paired_sequencing_file and not os.path.exists(rootname+'_corrected.fastq.gz'):
-        app.output.insert('end', 'Merging paired reads.\n')
+        app.output.insert('end', f'Merging paired reads. ({os.path.basename(rootname)})\n')
         root.update()
-        sequencing_file, paired_sequencing_file = AlignmentAnalyze.correct_pairs(sequencing_file, paired_sequencing_file)
+        sequencing_file = AlignmentAnalyze.correct_pairs(sequencing_file, paired_sequencing_file)
     else:
         print('Sequencing files already merged. Using existing corrected files')
 
@@ -59,7 +59,7 @@ def run(sequencing_file=None, paired_sequencing_file=None):
         print(message)
         app.output.insert('end', 'Aligning sequencing reads to reference.\n')
         root.update()
-        AlignmentAnalyze.align_all_bbmap(sequencing_file, app.wt_file, f'{rootname}.sam', max_gap=len(wt_seq), paired_sequencing_file=paired_sequencing_file)
+        AlignmentAnalyze.align_all_bbmap(sequencing_file, app.wt_file, f'{rootname}.sam', max_gap=len(wt_seq))
     else:
         print('Sequencing files already aligned. Using existing sam file')
 
@@ -85,14 +85,14 @@ def run(sequencing_file=None, paired_sequencing_file=None):
     if app.domains_file:
         app.output.insert('end', f'Finding Domains\n')
         root.update()
-        AlignmentAnalyze.align_domain(app, root, sequencing_file, app.wt_file, app.domains_file, rootname, paired_sequencing_file=paired_sequencing_file)
+        AlignmentAnalyze.align_domain(app, root, sequencing_file, app.wt_file, app.domains_file, rootname)
 
     seq_analyze_time = time.time() - programstart
     time_per_seq = round(seq_analyze_time / reads * 1000, 3)
     print(f'Analyzed {reads} in {round(seq_analyze_time, 1)} seconds. {time_per_seq} ms per read.')
     app.reads = reads
     app.output.insert('end', f'Analyzed {reads} in {round(seq_analyze_time, 1)} seconds. {time_per_seq} ms per read.\n')
-    app.output.insert('end', 'Finished Analysis!')
+    app.output.insert('end', 'Finished Analysis!\n')
     app.progress['value'] = 100
     root.update()
 
@@ -161,7 +161,7 @@ class Application(tk.Frame):
         self.quality = tk.Entry(self, textvariable=tk.StringVar(self, '20'))
         self.quality.grid(column=0)
 
-        tk.Label(self, text='Minimum Read Quality Score').grid(column=0)
+        tk.Label(self, text='Minimum Base Quality Score').grid(column=0)
         self.quality_nt = tk.Entry(self, textvariable=tk.StringVar(self, '25'))
         self.quality_nt.grid(column=0)
 

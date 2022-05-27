@@ -1,0 +1,13 @@
+#Summary
+#Generated on	Fri May 06 10:17:46 CDT 2022
+#Version	5
+chroms	1
+bases	16077
+defined	77
+undefined	16000
+contigs	1
+scaffolds	1
+interpad	300
+source	C:\Users\david.nedrud\Documents\NOTES\DATA\30-648766303\rev_1.fasta
+bytes	87
+last modified	1651850037436
