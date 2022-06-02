@@ -44,6 +44,13 @@ def run(sequencing_file=None, paired_sequencing_file=None):
     app.output.insert('end', message)
     root.update()
 
+    if app.muts_file:
+        app.muts_list = []
+        file = open(app.muts_file, 'r')
+        for line in file:
+            app.muts_list.append(line.strip())
+        file.close()
+
     ### Process Sequencing Records ###
     # merge paired reads
     if paired_sequencing_file and not os.path.exists(rootname+'_corrected.fastq.gz'):

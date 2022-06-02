@@ -214,18 +214,25 @@ def david_call_variants(sam_file, wt, outfile, app, root):
                     else:
                         raise TypeError('Cigar format not found')
                 read_length[1] = max(read_length[1], ref)
-        if len(tmpcounts) > 1:  # only record if mutations found
+        if len(tmpcounts) > 1:  # only record if mutations found (first entry is name of read)
             # append data
             sorted_counts = sorted(tmpcounts, reverse=True)
             #totalcounts.append(sorted_counts)  # this is really slow. Instead write to file
             file.write(','.join(sorted_counts) + '\n')
             mutation = sorted_counts[1:]
             if app.count_indels.get() or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
-                for mut in sorted(mutation):
-                    try:
-                        mutation_dict[mut] += 1  # simple dictionary of mutations
-                    except KeyError:
-                        mutation_dict[mut] = 1
+                if app.muts_file:
+                    if ', '.join(mutation) in app.muts_list:
+                        try:
+                            mutation_dict[', '.join(mutation)] += 1  # simple dictionary of mutations
+                        except KeyError:
+                            mutation_dict[', '.join(mutation)] = 1
+                else:
+                    for mut in sorted(mutation):
+                        try:
+                            mutation_dict[mut] += 1  # simple dictionary of mutations
+                        except KeyError:
+                            mutation_dict[mut] = 1
             if variant_check or correlation_check:  # and read_length[0] == 0 and read_length[1] >= len(wt):
                 # convert to AA
                 variant_mut = []
@@ -585,14 +592,14 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
         # create matrix
         df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount), ]
         matrix = df.pivot_table(index='AA', columns='position', values='score', aggfunc=np.mean)
-        for i in len(matrix):
-            matrix.loc[matrix.iloc['AA', i], i] = np.nan
         matrix['Average'] = matrix.mean(axis=1)
         matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
         aa_order = ['A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
         matrix = matrix.reindex(aa_order)
         matrix.loc['AveragePosition'] = matrix.drop('*').mean(axis=0)
         matrix = matrix.append(wt_seq)
+        for i in range(1, len(matrix.columns)):
+            matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
         matrix.to_csv(name + '_matrix.csv')
         # align to structure
         if structure_file:
@@ -612,7 +619,7 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
         df.to_csv(name, index=False)
     # volcano plot
     p = ggplot(df) + aes(x='score', y='std_error') + geom_point() + theme_minimal() + geom_text(
-        data=df.loc[df['score'] > 2]) + aes(x='score', y='std_error', label='mutation')
+        data=df.loc[df['score'] > 2]) + aes(x='score', y='std_error', label='mutation') + scale_y_reverse()
     print(p)
     print('Finished enrichment calculations')
 
@@ -620,12 +627,21 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
 def combine(dataset, combineBy, name, threshold, structure_file):
     df = dataset[0]
     if 'position' in list(df.columns):
+        count_datasets = 0
         for data in dataset[1:]:
-            df = pd.merge(df, data, on=['position', 'AA'])
+            if count_datasets == 2:
+                df = pd.merge(df, data, on=['position', 'AA'], suffixes=['_w', '_z'], how='outer')
+            else:
+                df = pd.merge(df, data, on=['position', 'AA'], how='outer')
+            count_datasets += 1
         df['mutation'] = df['position'].astype(str) + '_' + df['AA']
     else:
+        count_datasets = 0
         for data in dataset[1:]:
-            df = pd.merge(df, data, on='mutation')
+            if count_datasets == 2:
+                df = pd.merge(df, data, on='mutation', suffixes=['_w', '_z'], how='outer')
+            else:
+                df = pd.merge(df, data, on='mutation', how='outer')
     # correlation plot first
     if combineBy:
         tmpdf = df.loc[(df[[x for x in df.columns if 'std_error' in x]] < threshold).apply(sum, axis=1) > len([x for x in df.columns if 'std_error' in x])/2]
@@ -638,18 +654,18 @@ def combine(dataset, combineBy, name, threshold, structure_file):
     plt.pause(1)
     if not combineBy:
         # sum count_base
-        df['count_combined_base'] = df[[x for x in df.columns if 'count_base' in x]].sum(axis=1)
+        df['count_combined_base'] = df[[x for x in df.columns if 'count_base' in x]].sum(axis=1, min_count=1)
         # sum count_select
-        df['count_combined_select'] = df[[x for x in df.columns if 'count_select' in x]].sum(axis=1)
+        df['count_combined_select'] = df[[x for x in df.columns if 'count_select' in x]].sum(axis=1, min_count=1)
         df = df.fillna(0)
         if 'position' in list(df.columns):
             # by AA position
             wt_seq = pd.DataFrame()
             for i in df.position.unique():
                 selection = df.loc[df.position == i, :]
-                wt_seq.loc['WT_AA', i] = (selection.loc[selection['count_base'].idxmax(), 'AA'])
-                inp_count = sum(selection.loc[:, 'count_combined_base'] + 1)
-                sel_count = sum(selection.loc[:, 'count_combined_select'] + 1)
+                wt_seq.loc['WT_AA', i] = (selection.loc[selection['count_combined_base'].idxmax(), 'AA'])
+                inp_count = np.nansum(selection.loc[:, 'count_combined_base'] + 1)
+                sel_count = np.nansum(selection.loc[:, 'count_combined_select'] + 1)
                 for select, row in selection.iterrows():
                     inp_score = selection.loc[select, 'count_combined_base'] + 1
                     sel_score = selection.loc[select, 'count_combined_select'] + 1
@@ -659,8 +675,8 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                     df.loc[select, 'combined_std_error'] = se
         else:
             # by variant
-            inp_count = sum(df.loc[:, 'count_combined_base'] + 1)
-            sel_count = sum(df.loc[:, 'count_combined_select'] + 1)
+            inp_count = np.nansum(df.loc[:, 'count_combined_base'] + 1)
+            sel_count = np.nansum(df.loc[:, 'count_combined_select'] + 1)
             for select, row in df.iterrows():
                 inp_score = df.loc[select, 'count_combined_base'] + 1
                 sel_score = df.loc[select, 'count_combined_select'] + 1
@@ -719,6 +735,8 @@ def combine(dataset, combineBy, name, threshold, structure_file):
         matrix = matrix.reindex(aa_order)
         matrix.loc['AveragePosition'] = matrix.drop('*').mean(axis=0, skipna=True)
         matrix = matrix.append(wt_seq)
+        for i in range(1, len(matrix.columns)):
+            matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
         matrix.to_csv(name+'/combined_matrix.csv')
         # align to structure
         if structure_file:
