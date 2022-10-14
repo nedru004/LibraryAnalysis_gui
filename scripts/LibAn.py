@@ -12,17 +12,21 @@ from tkinter.ttk import Progressbar
 import pandas as pd
 import os
 import re
-
+import sys
 
 def run(sequencing_file=None, paired_sequencing_file=None):
+
     # variables from arguments
     assert os.path.isfile(app.wt_file), f"given refrence/wildtype file name '{app.wtseq}' does not exist!"
-    wt_seq = Bio.SeqIO.read(app.wt_file, "fasta")
+    wt_seq = Bio.SeqIO.read(app.wt_file, "fasta").upper()
     if sequencing_file==None or paired_sequencing_file==None:
         sequencing_file = app.seq_file
         paired_sequencing_file = app.paired_file
     # Sanity checks
     assert os.path.isfile(sequencing_file), f"given sequencing file, '{sequencing_file}', does not exist"
+    old_stdout = sys.stdout
+    log_file = open('test.fasta'.split('.fa')[0] + "message.log", "w")
+    sys.stdout = log_file
     assert Bio.SeqIO.read(app.wt_file, "fasta").seq.translate(), f"given refrence/wildtype sequence file " \
                                                                 f"'{app.wt_file}' is not a valid FASTA file " \
                                                                 f"containing one unambiguous DNA sequence!"
@@ -49,6 +53,12 @@ def run(sequencing_file=None, paired_sequencing_file=None):
         file = open(app.muts_file, 'r')
         for line in file:
             app.muts_list.append(line.strip())
+        file.close()
+    if app.aamuts_file:
+        app.aamuts_list = []
+        file = open(app.aamuts_file, 'r')
+        for line in file:
+            app.aamuts_list.append(line.strip())
         file.close()
 
     ### Process Sequencing Records ###
@@ -102,7 +112,8 @@ def run(sequencing_file=None, paired_sequencing_file=None):
     app.output.insert('end', 'Finished Analysis!\n')
     app.progress['value'] = 100
     root.update()
-
+    sys.stdout = old_stdout
+    log_file.close()
 
 def enrichment():
     AlignmentAnalyze.calc_enrichment(app.base, app.select, app.selectcount.split('.fastq')[0] + '_results.csv', int(app.mincount.get()), app.pdb)
@@ -121,6 +132,7 @@ def run_batch():
     for key, value in paired_files.items():
         assert len(value) < 3, f"Too many files linked to '{value[0]}'"
         run(sequencing_file=value[0], paired_sequencing_file=value[1])
+    print('Finished Batch Analysis')
 
 
 def combine():

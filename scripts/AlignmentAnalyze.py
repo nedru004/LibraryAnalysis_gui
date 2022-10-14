@@ -15,7 +15,7 @@ import pymol
 
 script_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../bbmap/current/'))
 
-codon = {'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L', 'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L', 'ATT': 'I',
+codon_chart = {'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L', 'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L', 'ATT': 'I',
          'ATC': 'I', 'ATA': 'I', 'ATG': 'M', 'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V', 'TCT': 'S', 'TCC': 'S',
          'TCA': 'S', 'TCG': 'S', 'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P', 'ACT': 'T', 'ACC': 'T', 'ACA': 'T',
          'ACG': 'T', 'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A', 'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
@@ -132,6 +132,9 @@ def david_call_variants(sam_file, wt, outfile, app, root):
     correlation_check = app.correlations_check.get()
     read_count = 0
     percentage_reads = list(range(0, app.reads, int(app.reads/99)+(app.reads % 99 > 0)))
+    root.update_idletasks()
+    app.progress['value'] = 0
+    root.update()
     while True:  # loop through each read from ngs
         try:
             tmp_r1 = next(loop_read).split('\t')
@@ -168,16 +171,20 @@ def david_call_variants(sam_file, wt, outfile, app, root):
                 fragment_cigar = list(filter(None, re.split(r'(\d+)', r3[5])))
                 for cigar in [fragment_cigar[ii:ii+2] for ii in range(0, len(fragment_cigar), 2)]:
                     if 'X' == cigar[1]:
-                        # this is a substitution=
+                        # this is a substitution
                         for i_sub in range(int(cigar[0])):  # not sure how this range works
                             codon_diff = (ref + i_sub) % 3  # find the correct frame
                             i_codon = r3[9][read + i_sub - codon_diff:read + i_sub - codon_diff + 3].upper()
+                            wt_codon = str(wt.seq[ref + i_sub - codon_diff:ref+ i_sub - codon_diff + 3])
                             # record codon if you can see the entire codon
                             if read + i_sub - codon_diff + 3 < len(r3[9]) and read + i_sub - codon_diff >= 0 and 'N' not in i_codon and '-' not in i_codon:
                                 # only record if confident about entire codon
                                 quality_codon = r3[10][read + i_sub - codon_diff:read + i_sub - codon_diff + 3]
                                 if all([ord(x)-33 > quality_nt for x in quality_codon]):
-                                    tmpcounts.add(str(int((ref+i_sub-codon_diff)/3+1))+'_' + i_codon)
+                                    if codon_chart[i_codon] == codon_chart[wt_codon]:
+                                        tmpcounts.add(str(int((ref + i_sub - codon_diff) / 3 + 1)) + '_' + i_codon + '*')
+                                    else:
+                                        tmpcounts.add(str(int((ref+i_sub-codon_diff)/3+1)) + '_' + i_codon)
                         ref += int(cigar[0])
                         read += int(cigar[0])
                     elif '=' == cigar[1]:
@@ -217,30 +224,37 @@ def david_call_variants(sam_file, wt, outfile, app, root):
         if len(tmpcounts) > 1:  # only record if mutations found (first entry is name of read)
             # append data
             sorted_counts = sorted(tmpcounts, reverse=True)
-            #totalcounts.append(sorted_counts)  # this is really slow. Instead write to file
             file.write(','.join(sorted_counts) + '\n')
             mutation = sorted_counts[1:]
             if app.count_indels.get() or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
                 if app.muts_file:
-                    if ', '.join(mutation) in app.muts_list:
-                        try:
-                            mutation_dict[', '.join(mutation)] += 1  # simple dictionary of mutations
-                        except KeyError:
-                            mutation_dict[', '.join(mutation)] = 1
+                    for mut in sorted(mutation):
+                        if mut.strip('*') in app.muts_list:
+                            try:
+                                mutation_dict[mut] += 1  # simple dictionary of mutations
+                            except KeyError:
+                                mutation_dict[mut] = 1
+                elif app.aamuts_file:
+                    for mut in sorted(mutation):
+                        if mut.strip('*').split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]] in app.aamuts_list:
+                            try:
+                                mutation_dict[mut] += 1  # simple dictionary of mutations
+                            except KeyError:
+                                mutation_dict[mut] = 1
                 else:
                     for mut in sorted(mutation):
                         try:
-                            mutation_dict[mut] += 1  # simple dictionary of mutations
+                            mutation_dict[mut.strip('*')] += 1  # simple dictionary of mutations
                         except KeyError:
-                            mutation_dict[mut] = 1
+                            mutation_dict[mut.strip('*')] = 1
             if variant_check or correlation_check:  # and read_length[0] == 0 and read_length[1] >= len(wt):
                 # convert to AA
                 variant_mut = []
                 for mut in mutation:
                     pos = int(mut.split('_')[0])-1
-                    if mut.split('_')[1] in codon:
-                        if codon[mut.split('_')[1]] != codon[wt.seq[pos*3:pos*3+3]]:
-                            variant_mut.append(mut.split('_')[0] + '_' + codon[mut.split('_')[1]])
+                    if mut.strip('*').split('_')[1] in codon_chart:
+                        if codon_chart[mut.strip('*').split('_')[1]] != codon_chart[wt.seq[pos*3:pos*3+3]]:
+                            variant_mut.append(mut.split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]])
                     else:
                         variant_mut.append(mut)
                 if variant_mut:
@@ -254,7 +268,8 @@ def david_call_variants(sam_file, wt, outfile, app, root):
             wt_positions = [xi for xi, x in enumerate(tmp_wt_count) if x]  # all positions wt codon was found
             for wt_idx in wt_positions:
                 wt_count[wt_idx] += 1  # only add to total count after both reads have been processed
-            wt_file.write(','.join(str(x) for x in wt_positions) + '\n')
+            if correlation_check:
+                wt_file.write(','.join(str(x) for x in wt_positions) + '\n')
         read_count += 1
         if read_count in percentage_reads:
             root.update_idletasks()
@@ -271,13 +286,18 @@ def david_call_variants(sam_file, wt, outfile, app, root):
         for mut in mutation_dict.keys():
             f.write(','.join(mut.split('_'))+',')
             try:
-                f.write(codon[mut.split('_')[1]]+',')
+                f.write(codon_chart[mut.split('_')[1]]+',')
             except KeyError:
-                f.write(mut.split('_')[1]+',')
+                f.write(codon_chart[mut.split('_')[1].strip('*')]+'*,')
             f.write(str(mutation_dict[mut])+'\n')
     mutations = pd.DataFrame({'name': list(mutation_dict.keys()), 'count': list(mutation_dict.values())})
     mutations[['position', 'AA']] = mutations['name'].str.split('_', expand=True)
-    mutations = mutations.replace({'AA': codon})
+    #mutations = mutations.replace({'AA': codon_chart})
+    for row in range(len(mutations)):
+        if '*' in mutations.loc[row, 'AA']:
+            mutations.loc[row, 'AA'] = codon_chart[mutations.loc[row, 'AA'].strip('*')] + '*'
+        else:
+            mutations.loc[row, 'AA'] = codon_chart[mutations.loc[row, 'AA']]
     mutations['position'] = pd.to_numeric(mutations['position'])
     matrix = mutations.pivot_table(index='AA', columns='position', values='count', aggfunc=sum)
     matrix.to_csv(outfile + '_matrix.csv')
@@ -533,7 +553,6 @@ def align_domain(app, root, sequencing_file, reference, domains_file, domain_out
                 if len(tmpcounts) > 1:  # only record if mutations found
                     # append data
                     sorted_counts = sorted(tmpcounts, reverse=True)
-                    # totalcounts.append(sorted_counts)  # this is really slow. Instead write to file
                     file_out.write(','.join(sorted_counts) + '\n')
         #os.remove(aligned_fnames)
         #os.remove(insert_filtered_fnames)
@@ -559,7 +578,8 @@ def map_structure(structure_file, matrix, min_q, max_q, name):
     pymol.stored.list = []
     pymol.cmd.iterate("(name ca)", "stored.list.append(resi)")
     matrix2 = matrix.iloc[:, 2:].reindex(columns=[int(x) for x in pymol.stored.list], fill_value=0).fillna(0)
-    pymol.stored.all = [float(x) for x in list(matrix2.iloc[21, :])]  # average row
+    print([float(x) for x in list(matrix2.iloc[22, :])])
+    pymol.stored.all = [float(x) for x in list(matrix2.iloc[22, :])]  # average row
     pymol.cmd.alter(selection=structure_name, expression='b=0.0')
     pymol.cmd.alter(selection=structure_name + ' and n. CA', expression='b=stored.all.pop(0)')
     pymol.cmd.spectrum(expression='b', palette='red_white_green', selection=structure_name + ' and n. CA',
@@ -570,9 +590,10 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
     base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
     selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
     # combine into one dataframe
-    df = pd.merge(base, selected, left_on=[x for x in base.columns if x != 'count'], right_on=[x for x in selected.columns if x != 'count'], suffixes=('_base', '_select'), how='outer')
-    df = df.fillna(0)
-    if 'position' in list(df.columns):
+    if 'position' in list(base.columns):
+        df = pd.merge(base, selected, left_on=['position', 'AA'], right_on=['position', 'AA'],
+                      suffixes=('_base', '_select'), how='outer')
+        df = df.fillna(0)
         # by AA position
         wt_seq = pd.DataFrame()
         for i in df.position.unique():
@@ -592,14 +613,19 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
         # create matrix
         df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount), ]
         matrix = df.pivot_table(index='AA', columns='position', values='score', aggfunc=np.mean)
-        matrix['Average'] = matrix.mean(axis=1)
-        matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
-        aa_order = ['A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
-        matrix = matrix.reindex(aa_order)
-        matrix.loc['AveragePosition'] = matrix.drop('*').mean(axis=0)
+        #matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
         matrix = matrix.append(wt_seq)
         for i in range(1, len(matrix.columns)):
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
+        # synonymous mutations replacement
+        for row in [x for x in matrix.index if '*' in x and not '*' == x]:
+            for col in matrix.columns:
+                if not np.isnan(matrix.loc[row, col]):
+                    matrix.loc[row.strip('*'), col] = matrix.loc[row, col]
+        aa_order = ['WT_AA', 'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
+        matrix = matrix.reindex(aa_order)
+        matrix['Average'] = matrix.drop('WT_AA').mean(axis=1)
+        matrix.loc['AveragePosition'] = matrix.drop(['*', 'WT_AA']).mean(axis=0)
         matrix.to_csv(name + '_matrix.csv')
         # align to structure
         if structure_file:
@@ -607,6 +633,9 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
             map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], name)
     else:
         # by variant
+        df = pd.merge(base, selected, left_on=['mutation'], right_on=['mutation'],
+                      suffixes=('_base', '_select'), how='outer')
+        df = df.fillna(0)
         inp_count = sum(df.loc[:, 'count_base'] + 1)
         sel_count = sum(df.loc[:, 'count_select'] + 1)
         for select, row in df.iterrows():
@@ -673,6 +702,7 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                     se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
                     df.loc[select, 'combined_score'] = score
                     df.loc[select, 'combined_std_error'] = se
+                df.loc[df.position == i, 'WT_AA'] = selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA']
         else:
             # by variant
             inp_count = np.nansum(df.loc[:, 'count_combined_base'] + 1)
@@ -717,6 +747,7 @@ def combine(dataset, combineBy, name, threshold, structure_file):
             for i in df.position.unique():
                 selection = df.loc[df.position == i, :]
                 wt_seq.loc['WT_AA', i] = (selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA'])
+                df.loc[df.position == i, 'WT_AA'] = selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA']
         df = df.loc[df['combined_std_error'] < threshold, ]
         # volcano plot
         p = ggplot(df) + aes(x='combined_score', y='combined_std_error') + geom_point() + theme_minimal() + \
@@ -729,15 +760,20 @@ def combine(dataset, combineBy, name, threshold, structure_file):
         matrix = df.pivot_table(index='AA', columns='position', values='combined_score', aggfunc=np.mean)
         missing_positions = list(set(range(1, max(df['position'])+1)).difference(matrix.columns))
         matrix[missing_positions] = np.nan
-        matrix['Average'] = matrix.mean(axis=1, skipna=True)
-        matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
-        aa_order = ['A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
-        matrix = matrix.reindex(aa_order)
-        matrix.loc['AveragePosition'] = matrix.drop('*').mean(axis=0, skipna=True)
         matrix = matrix.append(wt_seq)
         for i in range(1, len(matrix.columns)):
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
-        matrix.to_csv(name+'/combined_matrix.csv')
+        # synonymous mutations replacement
+        for row in [x for x in matrix.index if '*' in x and not '*' == x]:
+            for col in matrix.columns:
+                if not np.isnan(matrix.loc[row, col]):
+                    matrix.loc[row.strip('*'), col] = matrix.loc[row, col]
+        aa_order = ['WT_AA', 'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
+        matrix = matrix.reindex(aa_order)
+        matrix['Average'] = matrix.drop('WT_AA').mean(axis=1, skipna=True)
+        matrix.loc['AveragePosition'] = matrix.drop(['*', 'WT_AA']).mean(axis=0, skipna=True)
+        print(matrix)
+        matrix.to_csv(name + '/combined_matrix.csv')
         # align to structure
         if structure_file:
             quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])
