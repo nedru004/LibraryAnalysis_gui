@@ -1,0 +1,9 @@
+java -cp C:\Users\david.nedrud\Documents\GitHub\LibraryAnalysis_gui\bbmap\current jgi.BBMerge in1=C:/Users/david.nedrud/Documents/NOTES/DATA/30-811886565/00_fastq\base_R1_001.fastq.gz in2=C:/Users/david.nedrud/Documents/NOTES/DATA/30-811886565/00_fastq\base_R2_001.fastq.gz out1=C:/Users/david.nedrud/Documents/NOTES/DATA/30-811886565/00_fastq\base_R1_001_corrected.fastq.gz ecco mix
+Aligning all sequences from C:/Users/david.nedrud/Documents/NOTES/DATA/30-811886565/00_fastq\base_R1_001_corrected.fastq.gz to ID: tcb_truncated
+Name: tcb_truncated
+Description: tcb_truncated
+Number of features: 0
+Seq('CCCCGAGCTCTATATAAGCAGAGCTCGTTTAGTGAACCGTCAGATCGCCTGGAG...ACC') using bbmap.
+java -cp C:\Users\david.nedrud\Documents\GitHub\LibraryAnalysis_gui\bbmap\current align2.BBMap ref=C:/Users/david.nedrud/Documents/NOTES/DATA/30-811886565/00_fastq/tcb.fa in=C:/Users/david.nedrud/Documents/NOTES/DATA/30-811886565/00_fastq\base_R1_001_corrected.fastq.gz maxindel=2148 local outm=C:/Users/david.nedrud/Documents/NOTES/DATA/30-811886565/00_fastq\base_R1_001.sam
+Total number of reads to analyze: 314669
+Analyzed 314669 in 135.3 seconds. 0.43 ms per read.

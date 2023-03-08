@@ -15,7 +15,6 @@ import re
 import sys
 
 def run(sequencing_file=None, paired_sequencing_file=None):
-
     # variables from arguments
     assert os.path.isfile(app.wt_file), f"given refrence/wildtype file name '{app.wtseq}' does not exist!"
     wt_seq = Bio.SeqIO.read(app.wt_file, "fasta").upper()
@@ -24,9 +23,6 @@ def run(sequencing_file=None, paired_sequencing_file=None):
         paired_sequencing_file = app.paired_file
     # Sanity checks
     assert os.path.isfile(sequencing_file), f"given sequencing file, '{sequencing_file}', does not exist"
-    old_stdout = sys.stdout
-    log_file = open('test.fasta'.split('.fa')[0] + "message.log", "w")
-    sys.stdout = log_file
     assert Bio.SeqIO.read(app.wt_file, "fasta").seq.translate(), f"given refrence/wildtype sequence file " \
                                                                 f"'{app.wt_file}' is not a valid FASTA file " \
                                                                 f"containing one unambiguous DNA sequence!"
@@ -40,6 +36,11 @@ def run(sequencing_file=None, paired_sequencing_file=None):
 
     # output files
     rootname = os.path.splitext(sequencing_file)[0].split('.fastq')[0]
+
+    # create a log file containing inputs, number of reads, number of aligned reads, and number of aligned reads with at least one mutation
+    log = open(rootname + '_log.txt', 'w')
+    log.write(f"Sequencing File: {sequencing_file} \n")
+    log.write(f"Paired Sequencing File: {paired_sequencing_file} \n")
 
     # initialize some variables
     programstart = time.time()
@@ -76,7 +77,10 @@ def run(sequencing_file=None, paired_sequencing_file=None):
         print(message)
         app.output.insert('end', 'Aligning sequencing reads to reference.\n')
         root.update()
-        AlignmentAnalyze.align_all_bbmap(sequencing_file, app.wt_file, f'{rootname}.sam', max_gap=len(wt_seq))
+        if not app.pacbio.get():
+            AlignmentAnalyze.align_all_bbmap(sequencing_file, app.wt_file, f'{rootname}.sam', max_gap=len(wt_seq))
+        else:
+            AlignmentAnalyze.align_pacbio_bbmap(sequencing_file, app.wt_file, f'{rootname}.sam')
     else:
         print('Sequencing files already aligned. Using existing sam file')
 
@@ -87,16 +91,18 @@ def run(sequencing_file=None, paired_sequencing_file=None):
     app.reads = reads
     app.output.insert('end', f'Total number of reads to analyze: {str(reads)}\n')
     root.update()
+    # add number of reads to log
+    log.write(f"Total number of aligned reads: {str(reads)} \n")
 
     # call variants / find mutations
     app.output.insert('end', f'Calling mutations/variants\n')
     root.update()
     # David's work
-    AlignmentAnalyze.david_call_variants(f"{rootname}.sam", wt_seq, rootname, app, root)
+    AlignmentAnalyze.david_call_variants(f"{rootname}.sam", wt_seq, rootname, app, root, log)
     if app.correlations_check.get():
         app.output.insert('end', f'Finding paired mutations\n')
         root.update()
-        AlignmentAnalyze.david_paired_analysis(rootname + '_variants.csv', rootname + '_wt.csv', app, root)
+        AlignmentAnalyze.david_paired_analysis(rootname + '_variants.csv', rootname + '_wt.csv', app, root, log)
     # os.system(f'java -cp ../bbmap/current/ var2.CallVariants2 in={rootname}.sam ref={app.wt_file} ploidy=1 out={rootname}.vcf 32bit')
 
     if app.domains_file:
@@ -112,11 +118,10 @@ def run(sequencing_file=None, paired_sequencing_file=None):
     app.output.insert('end', 'Finished Analysis!\n')
     app.progress['value'] = 100
     root.update()
-    sys.stdout = old_stdout
-    log_file.close()
+    log.close()
 
 def enrichment():
-    AlignmentAnalyze.calc_enrichment(app.base, app.select, app.selectcount.split('.fastq')[0] + '_results.csv', int(app.mincount.get()), app.pdb)
+    AlignmentAnalyze.calc_enrichment(app, root, app.base, app.select, app.selectcount.split('.csv')[0] + '_results.csv', int(app.mincount.get()), app.pdb)
 
 
 def run_batch():
@@ -136,8 +141,11 @@ def run_batch():
 
 
 def combine():
-    AlignmentAnalyze.combine(app.datasets, app.combineBy.get(), app.dirname, float(app.mincount.get()), app.pdb)
+    AlignmentAnalyze.combine(app, root, app.datasets, app.combineBy.get(), app.dirname, float(app.mincount.get()), app.pdb)
 
+
+def sanger_analysis():
+    AlignmentAnalyze.analyze_sanger(filedialog.askopenfilename(title="Select ab1 file"))
 
 class Application(tk.Frame):
     def __init__(self, master=None):
@@ -158,6 +166,8 @@ class Application(tk.Frame):
         self.AA_check = tk.IntVar()
         self.variant_check = tk.IntVar()
         self.count_indels = tk.IntVar()
+        self.pacbio = tk.IntVar()
+        self.multiply = tk.IntVar()
 
         tk.Label(self, text='NGS alignment', font=("Arial", 16, 'bold')).grid(column=0)
         self.seq = tk.Button(self, text='Input sequencing reads (fastq)', command=self.browse_seq)
@@ -177,12 +187,15 @@ class Application(tk.Frame):
         self.wt_file = None
 
         tk.Label(self, text='Minimum Read Quality Score').grid(column=0)
-        self.quality = tk.Entry(self, textvariable=tk.StringVar(self, '20'))
+        self.quality = tk.Entry(self, textvariable=tk.StringVar(self, '15'))
         self.quality.grid(column=0)
 
         tk.Label(self, text='Minimum Base Quality Score').grid(column=0)
-        self.quality_nt = tk.Entry(self, textvariable=tk.StringVar(self, '25'))
+        self.quality_nt = tk.Entry(self, textvariable=tk.StringVar(self, '15'))
         self.quality_nt.grid(column=0)
+
+        self.pacbio_check = tk.Checkbutton(self, text='PacBio analysis', variable=self.pacbio)
+        self.pacbio_check.grid(column=0)
 
         self.variant = tk.Checkbutton(self, text='variant analysis', variable=self.variant_check)
         self.variant.select()
@@ -255,11 +268,18 @@ class Application(tk.Frame):
         self.r1.grid(column=1, row=13)
         self.r2 = tk.Radiobutton(self, text="Combine by Score", variable=self.combineBy, value=1)
         self.r2.grid(column=1, row=14)
+        self.multiply_check = tk.Checkbutton(self, text='Multiply Score by Count', variable=self.multiply)
+        self.multiply_check.grid(column=1, row=15)
+        self.multiply_check.select()
         self.data = tk.Button(self, text='Input dataset', command=self.browse_data)
-        self.data.grid(column=1, row=15)
+        self.data.grid(column=1, row=16)
         self.datasets = []
         self.combine = tk.Button(self, text='Combine Datasets', command=combine)
-        self.combine.grid(column=1, row=16)
+        self.combine.grid(column=1, row=17)
+
+        tk.Label(self, text='Other', font=("Arial", 12, 'bold')).grid(column=1, row=20)
+        self.sanger_button = tk.Button(self, text="Sanger Analysis", command=sanger_analysis)
+        self.sanger_button.grid(column=1, row=21)
 
     def browse_seq(self):
         self.seq_file = filedialog.askopenfilename(title="Select a File")
@@ -341,7 +361,13 @@ class Application(tk.Frame):
         tmpfile = filedialog.askopenfilenames(title="Select results files")
         if tmpfile != '':
             for file in tmpfile:
-                self.datasets.append(pd.read_csv(file))
+                tmp_dataset = pd.read_csv(file)
+                datasetname = os.path.basename(file).split('_')[0]
+                #loop through tmp_dataset columns but not position or AA
+                for col in tmp_dataset.columns[2:]:
+                    newcol = datasetname + '_' + col
+                    tmp_dataset.rename(columns={col: newcol}, inplace=True)
+                self.datasets.append(tmp_dataset)
                 app.output.insert('end', os.path.basename(file)+'\n')
                 self.dirname = os.path.dirname(file)
             root.update()

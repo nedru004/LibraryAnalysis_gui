@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-import os
 import numpy as np
 import pandas as pd
 import re
@@ -7,6 +6,7 @@ import itertools
 import math
 import multiprocessing as mp
 import Bio
+from Bio import SeqIO
 import os
 import matplotlib.pyplot as plt
 from plotnine import *
@@ -62,7 +62,7 @@ def correct_pairs(in1, in2, bbmerge_location=f'java -cp {script_path} jgi.BBMerg
     return out1
 
 
-def chunkit(align_files, file_size, chunk_size, other_args=[]):
+def chunkit(align_files, file_size, chunk_size, other_args=()):
     # define functions for finding breakpoints
     def is_start_of_line(position):
         if position == 0:
@@ -102,7 +102,7 @@ def david_call_parallel_variants(sam_file, wt, outfile, app, root):
     cpu_count = mp.cpu_count()
     file_size = os.path.getsize(sam_file)
     chunk_size = file_size // cpu_count
-    chunk_args = chunkit(sam_file, file_size, chunk_size, other_args=[wt, outfile, app, root])
+    chunk_args = chunkit(sam_file, file_size, chunk_size, other_args=(wt, outfile, app, root))
     # parallel
     with mp.Pool(cpu_count) as pool:
         answers = pool.starmap(david_call_variants, chunk_args)
@@ -118,7 +118,7 @@ def david_call_parallel_variants(sam_file, wt, outfile, app, root):
     # return totalcounts, wt_count
 
 
-def david_call_variants(sam_file, wt, outfile, app, root):
+def david_call_variants(sam_file, wt, outfile, app, root, log):
     quality = int(app.quality.get())
     quality_nt = int(app.quality_nt.get())
     # Analyze Codons
@@ -135,12 +135,15 @@ def david_call_variants(sam_file, wt, outfile, app, root):
     root.update_idletasks()
     app.progress['value'] = 0
     root.update()
+    bowtie = 0
     while True:  # loop through each read from ngs
         try:
             tmp_r1 = next(loop_read).split('\t')
         except:
             break
         if '@' in tmp_r1[0]:
+            if any(1 for x in tmp_r1 if 'bowtie' in x):
+                bowtie = 1
             continue
         # if read is paired to the next file
         if tmp_r1[6] == '=':
@@ -170,18 +173,18 @@ def david_call_variants(sam_file, wt, outfile, app, root):
                 # cycle through each codon until end of read or end of reference sequence
                 fragment_cigar = list(filter(None, re.split(r'(\d+)', r3[5])))
                 for cigar in [fragment_cigar[ii:ii+2] for ii in range(0, len(fragment_cigar), 2)]:
-                    if 'X' == cigar[1]:
+                    if 'X' == cigar[1] or ('M' == cigar[1] and bowtie == 1):
                         # this is a substitution
                         for i_sub in range(int(cigar[0])):  # not sure how this range works
                             codon_diff = (ref + i_sub) % 3  # find the correct frame
                             i_codon = r3[9][read + i_sub - codon_diff:read + i_sub - codon_diff + 3].upper()
-                            wt_codon = str(wt.seq[ref + i_sub - codon_diff:ref+ i_sub - codon_diff + 3])
+                            wt_codon = str(wt.seq[ref + i_sub - codon_diff: ref + i_sub - codon_diff + 3])
                             # record codon if you can see the entire codon
                             if read + i_sub - codon_diff + 3 < len(r3[9]) and read + i_sub - codon_diff >= 0 and 'N' not in i_codon and '-' not in i_codon:
                                 # only record if confident about entire codon
                                 quality_codon = r3[10][read + i_sub - codon_diff:read + i_sub - codon_diff + 3]
                                 if all([ord(x)-33 > quality_nt for x in quality_codon]):
-                                    if codon_chart[i_codon] == codon_chart[wt_codon]:
+                                    if codon_chart[i_codon] == codon_chart[wt_codon] and not bowtie:
                                         tmpcounts.add(str(int((ref + i_sub - codon_diff) / 3 + 1)) + '_' + i_codon + '*')
                                     else:
                                         tmpcounts.add(str(int((ref+i_sub-codon_diff)/3+1)) + '_' + i_codon)
@@ -214,7 +217,7 @@ def david_call_variants(sam_file, wt, outfile, app, root):
                     elif 'S' == cigar[1]:
                         # soft clipping
                         read += int(cigar[0])
-                    elif 'M' == cigar[1]:
+                    elif 'M' == cigar[1] and not bowtie:
                         # bad read (N) - ignore
                         ref += int(cigar[0])
                         read += int(cigar[0])
@@ -275,7 +278,19 @@ def david_call_variants(sam_file, wt, outfile, app, root):
             root.update_idletasks()
             app.progress['value'] += 1
             root.update()
-    # Add wt to mutation_dict
+    # plot log histogram of mutations
+    plt.figure()
+    plt.hist(mutation_dict.values(), bins=range(1, max(mutation_dict.values()) + 2))
+    plt.xlabel('Number of reads')
+    plt.ylabel('Number of mutations')
+    plt.yscale('log', nonposy='clip')
+    plt.savefig(outfile + '_mutations_hist.png')
+    plt.close()
+    # write length of mutations to log file
+    log.write('Number of mutations: ' + str(len(mutation_dict)) + '\n')
+    # write average reads per mutation to log file
+    log.write('Average reads per mutation: ' + str(sum(mutation_dict.values()) / len(mutation_dict)) + '\n')
+    # add wt count to mutation dictionary
     for i, wt_c in enumerate(wt_count[1:]):
         mutation_dict[str(i+1)+'_'+str(wt.seq[i*3:i*3+3])] = wt_c
     loop_read.close()
@@ -292,7 +307,6 @@ def david_call_variants(sam_file, wt, outfile, app, root):
             f.write(str(mutation_dict[mut])+'\n')
     mutations = pd.DataFrame({'name': list(mutation_dict.keys()), 'count': list(mutation_dict.values())})
     mutations[['position', 'AA']] = mutations['name'].str.split('_', expand=True)
-    #mutations = mutations.replace({'AA': codon_chart})
     for row in range(len(mutations)):
         if '*' in mutations.loc[row, 'AA']:
             mutations.loc[row, 'AA'] = codon_chart[mutations.loc[row, 'AA'].strip('*')] + '*'
@@ -302,6 +316,19 @@ def david_call_variants(sam_file, wt, outfile, app, root):
     matrix = mutations.pivot_table(index='AA', columns='position', values='count', aggfunc=sum)
     matrix.to_csv(outfile + '_matrix.csv')
     if variant_check or correlation_check:
+        plt.figure()
+        tmp_data = [v for k, v in variants.items() if v > 1 and k != 'WT']
+        plt.hist(tmp_data, bins=range(1, max(tmp_data) + 2))
+        plt.xlabel('Number of reads')
+        plt.ylabel('Number of variants')
+        plt.yscale('log', nonposy='clip')
+        plt.savefig(outfile + '_variants_hist.png')
+        plt.close()
+        # write length of variants to log file
+        log.write('Number of variants: ' + str(len(tmp_data)) + '\n')
+        # write average reads per variant to log file
+        log.write('Average reads per variant: ' + str(sum(tmp_data) / len(tmp_data)) + '\n')
+        # Add wt to mutation_dict
         with open(outfile + '_variants.csv', 'w') as f:
             f.write('count,mutation\n')
             for mut in variants.keys():
@@ -392,6 +419,7 @@ def wt_count(file_name, chunk_start, chunk_end):
     return correlations_wt
 
 
+
 def align_all_bbmap(sequencing_file, reference, sam_file, bbmap_script=f'java -cp {script_path} align2.BBMap',
                     max_gap=500, paired_sequencing_file=None):
     if paired_sequencing_file:
@@ -400,6 +428,13 @@ def align_all_bbmap(sequencing_file, reference, sam_file, bbmap_script=f'java -c
     else:
         command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
                   f"maxindel={max_gap} local outm={sam_file}"
+    print(command)
+    ret = os.system(command)
+    assert ret == 0
+
+def align_pacbio_bbmap(sequencing_file, reference, sam_file, bbmap_script=f'java -cp {script_path} align2.BBMap'):
+    command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
+              f"qin=33 outm={sam_file}"
     print(command)
     ret = os.system(command)
     assert ret == 0
@@ -571,50 +606,97 @@ def align_domain(app, root, sequencing_file, reference, domains_file, domain_out
     return domain_counts
 
 
-def map_structure(structure_file, matrix, min_q, max_q, name):
+def map_structure(structure_file, matrix, min_q, max_q, average, name):
     # pymol.finish_launching()
     pymol.cmd.load(structure_file)
     structure_name = os.path.basename(structure_file).split('.')[0]
     pymol.stored.list = []
     pymol.cmd.iterate("(name ca)", "stored.list.append(resi)")
     matrix2 = matrix.iloc[:, 2:].reindex(columns=[int(x) for x in pymol.stored.list], fill_value=0).fillna(0)
-    print([float(x) for x in list(matrix2.iloc[22, :])])
+    #print([float(x) for x in list(matrix2.iloc[22, :])])
     pymol.stored.all = [float(x) for x in list(matrix2.iloc[22, :])]  # average row
     pymol.cmd.alter(selection=structure_name, expression='b=0.0')
     pymol.cmd.alter(selection=structure_name + ' and n. CA', expression='b=stored.all.pop(0)')
     pymol.cmd.spectrum(expression='b', palette='red_white_green', selection=structure_name + ' and n. CA',
                        minimum=min_q, maximum=max_q)
     pymol.cmd.save(name + '_mapping.pse')
+    # loop through amino acids groups and store average in pymol b factor
+    aa_groups = {'Polar': ['N', 'Q', 'S', 'T'], 'Hydrophobic': ['A', 'I', 'L', 'M', 'V'], 'Positive': ['R', 'K', 'H'], 'Negative': ['D', 'E'], 'Aromatic': ['F', 'Y', 'W']}
+    for aa_group, aa_list in aa_groups.items():
+        sub_matrix = matrix2.loc[aa_list, :]
+        # replace 0 in sub_matrix with numpy NaN
+        sub_matrix = sub_matrix.replace(0, np.nan)
+        # calculate average and ignore NaN
+        aa_average = [float(x) for x in list(sub_matrix.mean(axis=0, skipna=True))]
+        # replace NaN with average
+        aa_average = [average if math.isnan(x) else x for x in aa_average]  # this will maintain 0 as white
+        pymol.stored.all = aa_average
+        pymol.cmd.alter(selection=structure_name, expression='b=0.0')
+        pymol.cmd.alter(selection=structure_name + ' and n. CA', expression='b=stored.all.pop(0)')
+        pymol.cmd.spectrum(expression='b', palette='red_white_green', selection=structure_name + ' and n. CA',
+                           minimum=min_q, maximum=max_q)
+        pymol.cmd.save(name + '_mapping_' + aa_group + '.pse')
+        # select enriched residues for given aa group
+        enriched = sub_matrix.loc[:, sub_matrix.mean(axis=0, skipna=True) > average]
+        pymol.cmd.select('enriched_' + aa_group, structure_name + ' and n. CA and resi ' + '+'.join([str(x) for x in list(enriched.columns)]))
+        pymol.cmd.set('dot_solvent', 1)
+        surface_area = pymol.cmd.get_area('enriched_' + aa_group, state=1, load_b=0)/len(enriched.columns)
+        # print surface area
+        print('Surface area of ' + aa_group + ' enriched residues: ' + str(surface_area))
+        # select enriched residues over 80% percentile for given aa group
+        enriched = sub_matrix.loc[:, sub_matrix.mean(axis=0, skipna=True) > np.nanpercentile(sub_matrix, 80)]
+        pymol.cmd.select('enriched_80_' + aa_group, structure_name + ' and n. CA and resi ' + '+'.join([str(x) for x in list(enriched.columns)]))
+        surface_area = pymol.cmd.get_area(selection='enriched_80_' + aa_group, state=1, load_b=0)/len(enriched.columns)
+        # print surface area
+        print('Surface area of ' + aa_group + ' enriched residues over 80% percentile: ' + str(surface_area))
 
-def calc_enrichment(base, selected, name, mincount, structure_file):
+
+
+def calc_enrichment(app, root, base, selected, name, mincount, structure_file):
     base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
     selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+    read_count = 0
     # combine into one dataframe
     if 'position' in list(base.columns):
-        df = pd.merge(base, selected, left_on=['position', 'AA'], right_on=['position', 'AA'],
-                      suffixes=('_base', '_select'), how='outer')
+        df = pd.merge(base, selected, left_on=['position', 'AA'], right_on=['position', 'AA'], suffixes=('_base', '_select'), how='outer')
         df = df.fillna(0)
+        percentage_reads = list(range(0, len(df), int(len(df) / 99) + (len(df) % 99 > 0)))
+        root.update_idletasks()
+        app.progress['value'] = 0
+        root.update()
         # by AA position
         wt_seq = pd.DataFrame()
         for i in df.position.unique():
             selection = df.loc[df.position == i, :]
             wt_seq.loc['WT_AA', i] = (selection.loc[selection['count_base'].idxmax(), 'AA'])
-            inp_count = sum(selection.loc[:, 'count_base']+1)
-            sel_count = sum(selection.loc[:, 'count_select']+1)
+            inp_count = sum(selection.loc[:, 'count_base'])+1
+            sel_count = sum(selection.loc[:, 'count_select'])+1
             for select, row in selection.iterrows():
                 inp_score = selection.loc[select, 'count_base'] + 1
                 sel_score = selection.loc[select, 'count_select'] + 1
                 score = math.log(sel_score / sel_count) - math.log(inp_score / inp_count)
                 se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
+                df.loc[select, 'base_frequency'] = inp_score / inp_count
+                df.loc[select, 'select_frequency'] = sel_score / sel_count
                 df.loc[select, 'score'] = score
                 df.loc[select, 'std_error'] = se
+                read_count += 1
+                if read_count in percentage_reads:
+                    root.update_idletasks()
+                    app.progress['value'] += 1
+                    root.update()
         df.to_csv(name, index=False)
         df['mutation'] = df['position'].astype(str) + '_' + df['AA']
         # create matrix
         df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount), ]
         matrix = df.pivot_table(index='AA', columns='position', values='score', aggfunc=np.mean)
-        #matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
+        count_matrix = df.pivot_table(index='AA', columns='position',
+                                      values='count_base', aggfunc=np.sum) + \
+                       df.pivot_table(index='AA', columns='position',
+                                      values='count_select', aggfunc=np.sum)
+        # color matrix based on count_matrix
         matrix = matrix.append(wt_seq)
+        count_matrix = count_matrix.append(wt_seq)
         for i in range(1, len(matrix.columns)):
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
         # synonymous mutations replacement
@@ -624,20 +706,35 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
                     matrix.loc[row.strip('*'), col] = matrix.loc[row, col]
         aa_order = ['WT_AA', 'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
         matrix = matrix.reindex(aa_order)
+        count_matrix = count_matrix.reindex(aa_order)
         matrix['Average'] = matrix.drop('WT_AA').mean(axis=1)
+        # move average to the beginning
+        matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
         matrix.loc['AveragePosition'] = matrix.drop(['*', 'WT_AA']).mean(axis=0)
-        matrix.to_csv(name + '_matrix.csv')
+        # loop through amino acid groups and calculate average
+        aa_groups = {'Polar': ['N', 'Q', 'S', 'T'], 'Hydrophobic': ['A', 'I', 'L', 'M', 'V'], 'Aromatic': ['F', 'Y', 'W'],
+                     'Positive': ['R', 'K', 'H'], 'Negative': ['D', 'E']}
+        for aa_group in aa_groups:
+            matrix.loc[aa_group] = matrix.loc[aa_groups[aa_group]].mean(axis=0)
+        writer = pd.ExcelWriter(name + 'combined_matrix.xlsx', engine='xlsxwriter')
+        matrix.to_excel(writer, sheet_name='Enrichment')
+        count_matrix.to_excel(writer, sheet_name='Counts')
         # align to structure
         if structure_file:
             quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])
-            map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], name)
+            average = matrix.loc['AveragePosition'].mean()
+            map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], average, name)
     else:
         # by variant
         df = pd.merge(base, selected, left_on=['mutation'], right_on=['mutation'],
                       suffixes=('_base', '_select'), how='outer')
         df = df.fillna(0)
-        inp_count = sum(df.loc[:, 'count_base'] + 1)
-        sel_count = sum(df.loc[:, 'count_select'] + 1)
+        percentage_reads = list(range(0, len(df), int(len(df) / 99) + (len(df) % 99 > 0)))
+        root.update_idletasks()
+        app.progress['value'] = 0
+        root.update()
+        inp_count = sum(df.loc[:, 'count_base'])+1
+        sel_count = sum(df.loc[:, 'count_select'])+1
         for select, row in df.iterrows():
             inp_score = df.loc[select, 'count_base'] + 1
             sel_score = df.loc[select, 'count_select'] + 1
@@ -645,32 +742,28 @@ def calc_enrichment(base, selected, name, mincount, structure_file):
             se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
             df.loc[select, 'score'] = score
             df.loc[select, 'std_error'] = se
+            read_count += 1
+            if read_count in percentage_reads:
+                root.update_idletasks()
+                app.progress['value'] += 1
+                root.update()
         df.to_csv(name, index=False)
     # volcano plot
-    p = ggplot(df) + aes(x='score', y='std_error') + geom_point() + theme_minimal() + geom_text(
+    p = ggplot(df.loc[(df.loc[:, 'count_base']+df.loc[:, 'count_select']) > mincount, :]) + aes(x='score', y='std_error') + geom_point() + theme_minimal() + geom_text(
         data=df.loc[df['score'] > 2]) + aes(x='score', y='std_error', label='mutation') + scale_y_reverse()
     print(p)
     print('Finished enrichment calculations')
 
 
-def combine(dataset, combineBy, name, threshold, structure_file):
+def combine(app, root, dataset, combineBy, name, threshold, structure_file):
     df = dataset[0]
-    if 'position' in list(df.columns):
-        count_datasets = 0
+    if 'position' in list(dataset[0].columns):
         for data in dataset[1:]:
-            if count_datasets == 2:
-                df = pd.merge(df, data, on=['position', 'AA'], suffixes=['_w', '_z'], how='outer')
-            else:
-                df = pd.merge(df, data, on=['position', 'AA'], how='outer')
-            count_datasets += 1
+            df = pd.merge(df, data, on=['position', 'AA'], how='outer')
         df['mutation'] = df['position'].astype(str) + '_' + df['AA']
     else:
-        count_datasets = 0
         for data in dataset[1:]:
-            if count_datasets == 2:
-                df = pd.merge(df, data, on='mutation', suffixes=['_w', '_z'], how='outer')
-            else:
-                df = pd.merge(df, data, on='mutation', how='outer')
+            df = pd.merge(df, data, on='mutation', how='outer')
     # correlation plot first
     if combineBy:
         tmpdf = df.loc[(df[[x for x in df.columns if 'std_error' in x]] < threshold).apply(sum, axis=1) > len([x for x in df.columns if 'std_error' in x])/2]
@@ -681,11 +774,16 @@ def combine(dataset, combineBy, name, threshold, structure_file):
     g.map_offdiag(sns.regplot)
     plt.show()
     plt.pause(1)
+    read_count = 0
+    percentage_reads = list(range(0, len(df), int(len(df) / 99) + (len(df) % 99 > 0)))
+    root.update_idletasks()
+    app.progress['value'] = 0
+    root.update()
+    # sum count_base
+    df['count_combined_base'] = df[[x for x in df.columns if 'count_base' in x]].sum(axis=1, min_count=1)
+    # sum count_select
+    df['count_combined_select'] = df[[x for x in df.columns if 'count_select' in x]].sum(axis=1, min_count=1)
     if not combineBy:
-        # sum count_base
-        df['count_combined_base'] = df[[x for x in df.columns if 'count_base' in x]].sum(axis=1, min_count=1)
-        # sum count_select
-        df['count_combined_select'] = df[[x for x in df.columns if 'count_select' in x]].sum(axis=1, min_count=1)
         df = df.fillna(0)
         if 'position' in list(df.columns):
             # by AA position
@@ -700,8 +798,16 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                     sel_score = selection.loc[select, 'count_combined_select'] + 1
                     score = math.log(sel_score / sel_count) - math.log(inp_score / inp_count)
                     se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
-                    df.loc[select, 'combined_score'] = score
+                    if app.multiply.get():
+                        df.loc[select, 'combined_score'] = score * (-(1 / (inp_score + sel_score)) ** 0.5 + 1)
+                    else:
+                        df.loc[select, 'combined_score'] = score
                     df.loc[select, 'combined_std_error'] = se
+                    read_count += 1
+                    if read_count in percentage_reads:
+                        root.update_idletasks()
+                        app.progress['value'] += 1
+                        root.update()
                 df.loc[df.position == i, 'WT_AA'] = selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA']
         else:
             # by variant
@@ -712,8 +818,16 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                 sel_score = df.loc[select, 'count_combined_select'] + 1
                 score = math.log(sel_score / sel_count) - math.log(inp_score / inp_count)
                 se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
-                df.loc[select, 'combined_score'] = score
+                if app.multiply.get():
+                    df.loc[select, 'combined_score'] = score * (-(1 / (inp_score + sel_score)) ** 0.5 + 1)
+                else:
+                    df.loc[select, 'combined_score'] = score
                 df.loc[select, 'combined_std_error'] = se
+                read_count += 1
+                if read_count in percentage_reads:
+                    root.update_idletasks()
+                    app.progress['value'] += 1
+                    root.update()
         df = df.loc[(df['count_combined_base'] > threshold) | (df['count_combined_select'] > threshold), ]
         df['log_count'] = np.log10(df['count_combined_base'] + df['count_combined_select'])
         # volcano plot
@@ -734,13 +848,24 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                 var_betaML = answer[0]  # return variance maximum likelihood
                 eps = answer[1]  # high epsilon means the rml_estimator failed to converge (should filter this)
                 if (eps < 0.001):
-                    df.loc[index, 'combined_score'] = sum(score * (var_betaML+[x**2 for x in se]) ** -1) / sum((var_betaML+[x**2 for x in se]) ** -1)
+                    inp_score = df.loc[index, 'count_combined_base'] + 1
+                    sel_score = df.loc[index, 'count_combined_select'] + 1
+                    score = sum(score * (var_betaML+[x**2 for x in se]) ** -1) / sum((var_betaML+[x**2 for x in se]) ** -1)
+                    if app.multiply.get():
+                        df.loc[index, 'combined_score'] = score * (-(1 / (inp_score + sel_score)) ** 0.5 + 1)
+                    else:
+                        df.loc[index, 'combined_score'] = score
                     df.loc[index, 'combined_std_error'] = np.sqrt(1 / sum([x**-2 for x in se]))
                     df.loc[index, 'combined_eps'] = eps
                 else:
                     df.loc[index, 'combined_score'] = np.nan
                     df.loc[index, 'combined_std_error'] = np.nan
                     df.loc[index, 'combined_eps'] = np.nan
+            read_count += 1
+            if read_count in percentage_reads:
+                root.update_idletasks()
+                app.progress['value'] += 1
+                root.update()
         if 'position' in list(df.columns):
             # by AA position
             wt_seq = pd.DataFrame()
@@ -748,6 +873,11 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                 selection = df.loc[df.position == i, :]
                 wt_seq.loc['WT_AA', i] = (selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA'])
                 df.loc[df.position == i, 'WT_AA'] = selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA']
+                read_count += 1
+                if read_count in percentage_reads:
+                    root.update_idletasks()
+                    app.progress['value'] += 1
+                    root.update()
         df = df.loc[df['combined_std_error'] < threshold, ]
         # volcano plot
         p = ggplot(df) + aes(x='combined_score', y='combined_std_error') + geom_point() + theme_minimal() + \
@@ -758,6 +888,11 @@ def combine(dataset, combineBy, name, threshold, structure_file):
     # create matrix
     if 'position' in df.columns:
         matrix = df.pivot_table(index='AA', columns='position', values='combined_score', aggfunc=np.mean)
+        # addition of count_combined_base and count_combined_select into matrix
+        count_matrix = df.pivot_table(index='AA', columns='position',
+                                      values='count_combined_base', aggfunc=np.sum) + \
+                       df.pivot_table(index='AA', columns='position',
+                                      values='count_combined_select', aggfunc=np.sum)
         missing_positions = list(set(range(1, max(df['position'])+1)).difference(matrix.columns))
         matrix[missing_positions] = np.nan
         matrix = matrix.append(wt_seq)
@@ -770,15 +905,27 @@ def combine(dataset, combineBy, name, threshold, structure_file):
                     matrix.loc[row.strip('*'), col] = matrix.loc[row, col]
         aa_order = ['WT_AA', 'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
         matrix = matrix.reindex(aa_order)
+        count_matrix = count_matrix.reindex(aa_order)
         matrix['Average'] = matrix.drop('WT_AA').mean(axis=1, skipna=True)
+        # move average to the beginning
+        matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
         matrix.loc['AveragePosition'] = matrix.drop(['*', 'WT_AA']).mean(axis=0, skipna=True)
-        print(matrix)
-        matrix.to_csv(name + '/combined_matrix.csv')
+        # loop through amino acid groups and calculate average
+        aa_groups = {'Polar': ['N', 'Q', 'S', 'T'], 'Hydrophobic': ['A', 'I', 'L', 'M', 'V'], 'Aromatic': ['F', 'Y', 'W'],
+                     'Positive': ['R', 'K', 'H'], 'Negative': ['D', 'E']}
+        for aa_group in aa_groups:
+            matrix.loc[aa_group] = matrix.loc[aa_groups[aa_group]].mean(axis=0, skipna=True)
+        writer = pd.ExcelWriter(name + '/combined_matrix.xlsx', engine='xlsxwriter')
+        matrix.to_excel(writer, sheet_name='Enrichment')
+        count_matrix.to_excel(writer, sheet_name='Counts')
+        writer.close()
         # align to structure
         if structure_file:
             quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])
-            map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], name)
+            average = matrix.loc['AveragePosition'].mean()
+            map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], average, name)
     print('Finished Combining Scores')
+
 
 
 def rml_estimator(y, sigma2i, iterations=500):  # function for recursive maximum likelihood estimator
@@ -856,3 +1003,16 @@ def find_barcodes(sequencing_file, paired_sequencing_file, adapters):
             if count_barcodes[barcode] > 1:
                 file.write(barcode+', '+str(count_barcodes[barcode])+'\n')
     print('Finished finding barcodes')
+
+
+def analyze_sanger(seq_file):
+    handle = open(seq_file, 'rb')
+    record = SeqIO.read(handle, "abi")
+    index = list(record.annotations['abif_raw']['PLOC1'])
+    base_extract = pd.DataFrame({'g': np.array(record.annotations['abif_raw']['DATA9'])[index],
+    'a': np.array(record.annotations['abif_raw']['DATA10'])[index],
+    't': np.array(record.annotations['abif_raw']['DATA11'])[index],
+    'c': np.array(record.annotations['abif_raw']['DATA12'])[index]})
+    base_extract.to_csv(seq_file+'_extract.csv')
+    handle.close()
+
