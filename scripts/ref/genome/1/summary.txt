@@ -1,13 +1,13 @@
 #Summary
-#Generated on	Wed Mar 08 11:48:39 CST 2023
+#Generated on	Thu Mar 16 15:13:42 CDT 2023
 #Version	5
 chroms	1
-bases	18148
-defined	2148
+bases	16342
+defined	342
 undefined	16000
 contigs	1
 scaffolds	1
 interpad	300
-source	C:\Users\david.nedrud\Documents\NOTES\DATA\Otto_010\tcb.fa
-bytes	2166
-last modified	1654710398000
+source	C:\Users\david.nedrud\Documents\NOTES\DATA\30-833244748\IL15_fastq\IL15.fa
+bytes	369
+last modified	1666633426347

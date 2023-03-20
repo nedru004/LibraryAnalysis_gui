@@ -5,6 +5,7 @@ import re
 import itertools
 import math
 import multiprocessing as mp
+from threading import Thread
 import Bio
 from Bio import SeqIO
 import os
@@ -77,6 +78,14 @@ def chunkit(align_files, file_size, chunk_size, other_args=()):
         f.readline()
         # Return a position after reading the line
         return f.tell()
+
+    def is_paired(position):
+        # Read the current line till the end
+        f.seek(position)
+        name = f.readline().split('\t')[0]
+        # Return a position after reading the line
+        return next(f).split('\t')[0] == name
+
     # Arguments for each chunk
     chunk_args = []
     with open(align_files, 'r') as f:
@@ -87,6 +96,10 @@ def chunkit(align_files, file_size, chunk_size, other_args=()):
             # Make sure the chunk ends at the beginning of the next line
             while not is_start_of_line(chunk_end):
                 chunk_end -= 1
+            # If the next line is paired, move the chunk end to the next line
+            if chunk_end != file_size:
+                while not is_paired(chunk_end):
+                    chunk_end += 1
             # Handle the case when a line is too long to fit the chunk size
             if chunk_start == chunk_end:
                 chunk_end = get_next_line_position(chunk_end)
@@ -98,47 +111,45 @@ def chunkit(align_files, file_size, chunk_size, other_args=()):
     return chunk_args
 
 
-def david_call_parallel_variants(sam_file, wt, outfile, app, root):
+def david_call_parallel_variants(sam_file, wt, outfile, app):
     cpu_count = mp.cpu_count()
+    print('Running parallel analysis with', cpu_count, 'cores')
     file_size = os.path.getsize(sam_file)
     chunk_size = file_size // cpu_count
-    chunk_args = chunkit(sam_file, file_size, chunk_size, other_args=(wt, outfile, app, root))
+    chunk_args = chunkit(sam_file, file_size, chunk_size, other_args=(wt, outfile, app))
     # parallel
     with mp.Pool(cpu_count) as pool:
         answers = pool.starmap(david_call_variants, chunk_args)
-    for answer in answers:
-        correlations_wt = {k: correlations_wt.get(k, 0) + answer.get(k, 0) for k in set(correlations_wt) | set(answer)}
-    wt_matrix = pd.DataFrame({'pair': list(correlations_wt.keys()), 'count': list(correlations_wt.values())})
-    # # combine results
-    # wt_count = None
-    # for result in results:
-    #     for xi, x in enumerate(result):
-    #         wt_count[xi] += x
-    #     totalcounts += result[0]
-    # return totalcounts, wt_count
-
-
-def david_call_variants(sam_file, wt, outfile, app, root, log):
-    quality = int(app.quality.get())
-    quality_nt = int(app.quality_nt.get())
-    # Analyze Codons
-    loop_read = open(sam_file, 'r')
     mutation_dict = {}
     variants = {'WT': 0}
     wt_count = [0]*int(len(wt)/3)
-    file = open(outfile + '.csv', 'w')
-    wt_file = open(outfile + '_wt.csv', 'w')
-    variant_check = app.variant_check.get()
-    correlation_check = app.correlations_check.get()
-    read_count = 0
-    percentage_reads = list(range(0, app.reads, int(app.reads/99)+(app.reads % 99 > 0)))
-    root.update_idletasks()
-    app.progress['value'] = 0
-    root.update()
+    for answer in answers:
+        mutation_dict.update(answer[0])
+        variants.update(answer[1])
+        wt_count = [sum(x) for x in zip(wt_count, answer[2])]
+    write_output(mutation_dict, variants, wt_count, wt, outfile)
+
+def david_call_variants(sam_file, start, end, wt, outfile, app):
+    quality = int(app.minq)
+    quality_nt = int(app.minb)
+    # Analyze Codons
+    loop_read = open(sam_file, 'r')
+    loop_read.seek(start)
+    mutation_dict = {}
+    variants = {'WT': 0}
+    wt_count = [0]*int(len(wt)/3)
+    file = open(outfile + '_' + str(start) + '.csv', 'w')
+    wt_file = open(outfile + '_' + str(start) + '_wt.csv', 'w')
+    variant_check = app.variant
+    correlation_check = app.correlation
     bowtie = 0
     while True:  # loop through each read from ngs
         try:
-            tmp_r1 = next(loop_read).split('\t')
+            line = next(loop_read)
+            tmp_r1 = line.split('\t')
+            start += len(line)
+            if start > end:
+                break
         except:
             break
         if '@' in tmp_r1[0]:
@@ -147,7 +158,11 @@ def david_call_variants(sam_file, wt, outfile, app, root, log):
             continue
         # if read is paired to the next file
         if tmp_r1[6] == '=':
-            tmp_r2 = next(loop_read).split('\t')
+            line = next(loop_read)
+            tmp_r2 = line.split('\t')
+            start += len(line)
+            if start > end:
+                break
             if tmp_r1[0] == tmp_r2[0]:  # paired reads have the same name
                 # identify forward strand
                 if int(f'{int(tmp_r1[1]):012b}'[::-1][4]):
@@ -229,15 +244,15 @@ def david_call_variants(sam_file, wt, outfile, app, root, log):
             sorted_counts = sorted(tmpcounts, reverse=True)
             file.write(','.join(sorted_counts) + '\n')
             mutation = sorted_counts[1:]
-            if app.count_indels.get() or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
-                if app.muts_file:
+            if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
+                if app.muts:
                     for mut in sorted(mutation):
                         if mut.strip('*') in app.muts_list:
                             try:
                                 mutation_dict[mut] += 1  # simple dictionary of mutations
                             except KeyError:
                                 mutation_dict[mut] = 1
-                elif app.aamuts_file:
+                elif app.aamuts:
                     for mut in sorted(mutation):
                         if mut.strip('*').split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]] in app.aamuts_list:
                             try:
@@ -273,29 +288,25 @@ def david_call_variants(sam_file, wt, outfile, app, root, log):
                 wt_count[wt_idx] += 1  # only add to total count after both reads have been processed
             if correlation_check:
                 wt_file.write(','.join(str(x) for x in wt_positions) + '\n')
-        read_count += 1
-        if read_count in percentage_reads:
-            root.update_idletasks()
-            app.progress['value'] += 1
-            root.update()
-    # plot log histogram of mutations
-    plt.figure()
-    plt.hist(mutation_dict.values(), bins=range(1, max(mutation_dict.values()) + 2))
-    plt.xlabel('Number of reads')
-    plt.ylabel('Number of mutations')
-    plt.yscale('log', nonposy='clip')
-    plt.savefig(outfile + '_mutations_hist.png')
-    plt.close()
-    # write length of mutations to log file
-    log.write('Number of mutations: ' + str(len(mutation_dict)) + '\n')
-    # write average reads per mutation to log file
-    log.write('Average reads per mutation: ' + str(sum(mutation_dict.values()) / len(mutation_dict)) + '\n')
-    # add wt count to mutation dictionary
-    for i, wt_c in enumerate(wt_count[1:]):
-        mutation_dict[str(i+1)+'_'+str(wt.seq[i*3:i*3+3])] = wt_c
     loop_read.close()
     file.close()
     wt_file.close()
+    # os.remove(sam_file)
+    return mutation_dict, variants, wt_count
+
+
+def write_output(mutation_dict, variants, wt_count, wt, outfile):
+    # plot log histogram of mutations
+    # plt.figure()
+    # plt.hist(mutation_dict.values(), bins=range(1, max(mutation_dict.values()) + 2))
+    # plt.xlabel('Number of reads')
+    # plt.ylabel('Number of mutations')
+    # plt.yscale('log', nonposy='clip')
+    # plt.savefig(outfile + '_mutations_hist.png')
+    # plt.close()
+    # add wt count to mutation dictionary
+    for i, wt_c in enumerate(wt_count[1:]):
+        mutation_dict[str(i+1)+'_'+str(wt.seq[i*3:i*3+3])] = wt_c
     with open(outfile + '_mutlist.csv', 'w') as f:
         f.write('position,codon,AA,count\n')
         for mut in mutation_dict.keys():
@@ -315,34 +326,25 @@ def david_call_variants(sam_file, wt, outfile, app, root, log):
     mutations['position'] = pd.to_numeric(mutations['position'])
     matrix = mutations.pivot_table(index='AA', columns='position', values='count', aggfunc=sum)
     matrix.to_csv(outfile + '_matrix.csv')
-    if variant_check or correlation_check:
-        plt.figure()
-        tmp_data = [v for k, v in variants.items() if v > 1 and k != 'WT']
-        plt.hist(tmp_data, bins=range(1, max(tmp_data) + 2))
-        plt.xlabel('Number of reads')
-        plt.ylabel('Number of variants')
-        plt.yscale('log', nonposy='clip')
-        plt.savefig(outfile + '_variants_hist.png')
-        plt.close()
-        # write length of variants to log file
-        log.write('Number of variants: ' + str(len(tmp_data)) + '\n')
-        # write average reads per variant to log file
-        log.write('Average reads per variant: ' + str(sum(tmp_data) / len(tmp_data)) + '\n')
+    if variants:
+        # plt.figure()
+        # tmp_data = [v for k, v in variants.items() if v > 1 and k != 'WT']
+        # plt.hist(tmp_data, bins=range(1, max(tmp_data) + 2))
+        # plt.xlabel('Number of reads')
+        # plt.ylabel('Number of variants')
+        # plt.yscale('log', nonposy='clip')
+        # plt.savefig(outfile + '_variants_hist.png')
+        # plt.close()
         # Add wt to mutation_dict
         with open(outfile + '_variants.csv', 'w') as f:
             f.write('count,mutation\n')
             for mut in variants.keys():
                 f.write(str(variants[mut]) + ',')
                 f.write(mut + '\n')
-    #os.remove(sam_file)
-    #return mutation_table, correlation_matrix, correlation_matrix_wt
 
 
-def david_paired_analysis(mut_files, wt_files, app, root):
+def david_paired_analysis(mut_files, wt_files, app, log):
     percentage_reads = list(range(0, app.reads, int(app.reads/99)))
-    root.update_idletasks()
-    app.progress['value'] = 0
-    root.update()
     outfile = os.path.splitext(mut_files)[0].split('.fastq')[0]
     ## Mutation Pairs ##
     mutation_pair_dict = {}
@@ -426,8 +428,8 @@ def align_all_bbmap(sequencing_file, reference, sam_file, bbmap_script=f'java -c
         command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
                   f"in2={paired_sequencing_file} maxindel={max_gap} local outm={sam_file}"
     else:
-        command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
-                  f"maxindel={max_gap} local outm={sam_file}"
+            command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
+                    f"maxindel={max_gap} local outm={sam_file}"
     print(command)
     ret = os.system(command)
     assert ret == 0
@@ -440,7 +442,7 @@ def align_pacbio_bbmap(sequencing_file, reference, sam_file, bbmap_script=f'java
     assert ret == 0
 
 
-def align_domain(app, root, sequencing_file, reference, domains_file, domain_out_file):
+def align_domain(app, sequencing_file, reference, domains_file, domain_out_file):
     # read domains
     domains = list(Bio.SeqIO.parse(domains_file, 'fasta'))
     # generate fragments small enough to find ends but large enough to distinguish from other domains
@@ -460,9 +462,6 @@ def align_domain(app, root, sequencing_file, reference, domains_file, domain_out
     quality_nt = int(app.quality_nt.get())
     wt = Bio.SeqIO.read(reference, 'fasta').seq
     wt_count = [0] * int(len(wt) / 3 + 1)
-    root.update_idletasks()
-    app.progress['value'] = 0
-    root.update()
     fraction = 100/len(domains)
     for domain in domains:
         domain_reference = os.path.join(os.path.dirname(domains_file), domain.id + '.fasta')
@@ -594,9 +593,6 @@ def align_domain(app, root, sequencing_file, reference, domains_file, domain_out
         #os.remove(insert_bbone_filtered_fnames)
         #os.remove(filtered_masked_fnames)
         #os.remove(domain_reference)
-        root.update_idletasks()
-        app.progress['value'] += fraction
-        root.update()
     for wt_pos, count in enumerate(wt_count):
         domain_counts.loc[wt_pos, 'wt'] = count
     # convert NaN to 0
