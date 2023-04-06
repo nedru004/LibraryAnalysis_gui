@@ -6,3 +6,4 @@ seaborn
 plotnine
 pymol
 xlsxwriter
+umap-learn

@@ -12,17 +12,24 @@ import sys
 
 def run_LibAn():
     arguments = ['-s', app.seq_file[0], '-p', app.paired_file, '-wt', app.wt_file,
-                '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel_check.get(),
-                '-v', app.variant_check.get(), '-i', app.count_indels.get(), '-pb', app.pacbio.get()]
+                '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel.get()]
     # run through the rest of the arguments
+    if app.variant_check.get():
+        arguments.append('-v')
+    if app.variantfull_check.get():
+        arguments.append('-vfull')
+    if app.count_indels.get():
+        arguments.append('-i')
+    if app.pacbio.get():
+        arguments.append('-pb')
     if app.correlations_check.get():
-        arguments.append(['-cor', app.correlations_check.get()])
+        arguments.append('-c')
     if app.muts_file:
-        arguments.append(['-m', app.muts_file])
+        arguments.extend(['-m', app.muts_file])
     if app.aamuts_file:
-        arguments.append(['-a', app.aamuts_file])
+        arguments.extend(['-a', app.aamuts_file])
     if app.domains_file:
-        arguments.append(['-d', app.domains_file])
+        arguments.extend(['-d', app.domains_file])
     # convert list to string
     arguments = [str(item) for item in arguments]
     print('To run Analysis, run the following command:')
@@ -31,7 +38,7 @@ def run_LibAn():
 
 
 def enrichment():
-    AlignmentAnalyze.calc_enrichment(app, root, app.base, app.select, app.selectcount.split('.csv')[0] + '_results.csv', int(app.mincount.get()), app.pdb)
+    AlignmentAnalyze.calc_enrichment(app, root, app.base, app.select, app.selectcount.split('.csv')[0] + '_results.csv', int(app.mincount.get()), app.pdb, app.muts_file)
 
 
 def run_batch():
@@ -46,7 +53,30 @@ def run_batch():
                 paired_files[re.sub(r'_R\d_', '', file)] = [os.path.join(batch_folder, file)]
     for key, value in paired_files.items():
         assert len(value) < 3, f"Too many files linked to '{value[0]}'"
-        LibAn.main(sequencing_file=value[0], paired_sequencing_file=value[1])
+        arguments = ['-s', app.seq_file[0], '-p', app.paired_file, '-wt', app.wt_file,
+                     '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel.get()]
+        # run through the rest of the arguments
+        if app.variant_check.get():
+            arguments.append(['-v'])
+        if app.variantfull_check.get():
+            arguments.append(['-vfull'])
+        if app.count_indels.get():
+            arguments.append(['-i'])
+        if app.pacbio.get():
+            arguments.append(['-pb'])
+        if app.correlations_check.get():
+            arguments.append(['-c'])
+        if app.muts_file:
+            arguments.append(['-m', app.muts_file])
+        if app.aamuts_file:
+            arguments.append(['-a', app.aamuts_file])
+        if app.domains_file:
+            arguments.append(['-d', app.domains_file])
+        # convert list to string
+        arguments = [str(item) for item in arguments]
+        print('To run Analysis, run the following command:')
+        print('python LibAn.py ' + ' '.join(arguments))
+        LibAn.main(arguments)
     print('Finished Batch Analysis')
 
 
@@ -70,11 +100,12 @@ class Application(tk.Frame):
         self.verbose_check = tk.IntVar()
         self.deep_check = tk.IntVar()
         self.correlations_check = tk.IntVar()
-        self.parallel_check = tk.IntVar()
+        self.parallel = tk.IntVar()
         self.bryan = tk.IntVar()
         self.domain_check = tk.IntVar()
         self.AA_check = tk.IntVar()
         self.variant_check = tk.IntVar()
+        self.variantfull_check = tk.IntVar()
         self.count_indels = tk.IntVar()
         self.pacbio = tk.IntVar()
         self.multiply = tk.IntVar()
@@ -107,9 +138,12 @@ class Application(tk.Frame):
         self.pacbio_check = tk.Checkbutton(self, text='PacBio analysis', variable=self.pacbio)
         self.pacbio_check.grid(column=0)
 
-        self.variant = tk.Checkbutton(self, text='variant analysis', variable=self.variant_check)
+        self.variant = tk.Checkbutton(self, text='Variant analysis', variable=self.variant_check)
         self.variant.select()
         self.variant.grid(column=0)
+        self.variantfull = tk.Checkbutton(self, text='     Full length variant analysis', variable=self.variantfull_check)
+        self.variantfull.select()
+        self.variantfull.grid(column=0)
 
         self.correlation = tk.Checkbutton(self, text='Correlation analysis', variable=self.correlations_check)
         self.correlation.grid(column=0)
@@ -131,9 +165,10 @@ class Application(tk.Frame):
         self.domains_file = None
 
         tk.Label(self, text='Run', font='bold').grid(column=0)
-        self.parallel = tk.Checkbutton(self, text='Parallel computing', variable=self.parallel_check)
-        self.parallel.select()
+        tk.Label(self, text='Number of computing threads (parallel)').grid(column=0)
+        self.parallel = tk.Entry(self, textvariable=tk.StringVar(self, '1'))
         self.parallel.grid(column=0)
+
         self.run = tk.Button(self, text='Run analysis', command=run_LibAn)
         self.run.grid(column=0)
         tk.Label(self, text='Run Batch', font='bold)').grid(column=0)

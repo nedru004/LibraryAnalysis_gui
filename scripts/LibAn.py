@@ -6,6 +6,14 @@ import Bio.SeqRecord
 import argparse
 import os
 
+
+def _count_generator(reader):
+    b = reader(1024 * 1024)
+    while b:
+        yield b
+        b = reader(1024 * 1024)
+
+
 def main(raw_args=None):
     parser = argparse.ArgumentParser(description='Analyze sequencing data for mutations')
     parser.add_argument('-wt', '--wtseq', help='FASTA file containing the wildtype sequence', required=True)
@@ -14,20 +22,18 @@ def main(raw_args=None):
     parser.add_argument('-d', '--domains', help='FASTA file containing the domains of the wildtype sequence')
     parser.add_argument('-m', '--muts', help='File containing the mutations to be analyzed')
     parser.add_argument('-a', '--aamuts', help='File containing the amino acid mutations to be analyzed')
-    parser.add_argument('-o', '--output', help='Output file name')
+    parser.add_argument('-o', '--output', help='Output file directory and name')
     parser.add_argument('-pb', '--pacbio', help='Use pacbio sequencing', action='store_true')
     parser.add_argument('-v', '--variant', help='Variant Analysis', action='store_false')
+    parser.add_argument('-vfull', '--variantfull', help='Full length Variant Analysis', action='store_true')
     parser.add_argument('-c', '--correlation', help='Correlation Analysis', action='store_true')
     parser.add_argument('-i', '--indel', help='Analyze indel mutations', action='store_true')
     parser.add_argument('-minq', '--minq', help='Minimum quality of reads to analyze', default=15)
     parser.add_argument('-minb', '--minb', help='Minimum quality of bases to analyze', default=15)
-    parser.add_argument('-par', '--parallel', help='Run analysis in parallel batches', action='store_false')
+    parser.add_argument('-par', '--parallel', help='Run analysis with number of cores. Default is 1', type=int, default=1)
     parser.add_argument('-f', '--force', help='Force overwrite of existing files', action='store_true')
-    parser.add_argument('-l', '--local', help='Use local blast database', action='store_true')
     parser.add_argument('-n', '--nuc', help='Analyze nucleotide mutations', action='store_true')
     parser.add_argument('-aa', '--aa', help='Analyze amino acid mutations', action='store_true')
-    parser.add_argument('-w', '--window', help='Window size for indel analysis', default=5)
-    parser.add_argument('-k', '--kmer', help='Kmer size for indel analysis', default=5)
 
     args = parser.parse_args(raw_args)
 
@@ -86,7 +92,7 @@ def main(raw_args=None):
         message = f'Aligning all sequences from {sequencing_file} to {wt_seq} using bbmap.'
         print(message)
         print('Aligning sequencing reads to reference.\n')
-        if not args.pacbio.get():
+        if not args.pacbio:
             AlignmentAnalyze.align_all_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', max_gap=len(wt_seq))
         else:
             AlignmentAnalyze.align_pacbio_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam')
@@ -94,8 +100,13 @@ def main(raw_args=None):
         print('Sequencing files already aligned. Using existing sam file')
 
     # determine the number of reads
-    lines = sum(1 for i in open(f'{rootname}.sam', 'rb'))
-    reads = int((lines-3) / 2)
+    with open(f'{rootname}.sam', 'rb') as fp:
+        c_generator = _count_generator(fp.raw.read)
+        # count each \n
+        reads = sum(buffer.count(b'\n') for buffer in c_generator)
+        print('Total lines:', reads + 1)
+    if args.paired:
+        reads = int((reads-3) / 2)
     print('Total number of reads to analyze: '+str(reads))
     args.reads = reads
 
@@ -105,7 +116,7 @@ def main(raw_args=None):
     # call variants / find mutations
     print(f'Calling mutations/variants\n')
 
-    if args.parallel:
+    if args.parallel > 1:
         # multi core
         AlignmentAnalyze.david_call_parallel_variants(f"{rootname}.sam", wt_seq, rootname, args)
     else:

@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 from plotnine import *
 import seaborn as sns
 import pymol
+#import umap
+
 
 script_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../bbmap/current/'))
 
@@ -97,9 +99,13 @@ def chunkit(align_files, file_size, chunk_size, other_args=()):
             while not is_start_of_line(chunk_end):
                 chunk_end -= 1
             # If the next line is paired, move the chunk end to the next line
-            if chunk_end != file_size:
+            f.seek(chunk_end)
+            if (chunk_end + len(f.readline())) < file_size:
                 while not is_paired(chunk_end):
-                    chunk_end += 1
+                    f.seek(chunk_end)
+                    chunk_end += len(f.readline())
+                while not is_start_of_line(chunk_end):
+                    chunk_end -= 1
             # Handle the case when a line is too long to fit the chunk size
             if chunk_start == chunk_end:
                 chunk_end = get_next_line_position(chunk_end)
@@ -112,7 +118,7 @@ def chunkit(align_files, file_size, chunk_size, other_args=()):
 
 
 def david_call_parallel_variants(sam_file, wt, outfile, app):
-    cpu_count = mp.cpu_count()
+    cpu_count = min(app.parallel, mp.cpu_count())
     print('Running parallel analysis with', cpu_count, 'cores')
     file_size = os.path.getsize(sam_file)
     chunk_size = file_size // cpu_count
@@ -265,23 +271,25 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                             mutation_dict[mut.strip('*')] += 1  # simple dictionary of mutations
                         except KeyError:
                             mutation_dict[mut.strip('*')] = 1
-            if variant_check or correlation_check:  # and read_length[0] == 0 and read_length[1] >= len(wt):
-                # convert to AA
-                variant_mut = []
-                for mut in mutation:
-                    pos = int(mut.split('_')[0])-1
-                    if mut.strip('*').split('_')[1] in codon_chart:
-                        if codon_chart[mut.strip('*').split('_')[1]] != codon_chart[wt.seq[pos*3:pos*3+3]]:
-                            variant_mut.append(mut.split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]])
-                    else:
-                        variant_mut.append(mut)
-                if variant_mut:
-                    try:
-                        variants['+'.join(variant_mut)] += 1
-                    except KeyError:
-                        variants['+'.join(variant_mut)] = 1
-        else: #if len(tmpcounts) == 1 and variant_check and read_length[0] == 0 and read_length[1] >= len(wt):
-            variants['WT'] += 1
+            if variant_check or correlation_check:
+                if not app.variantfull or (app.variantfull and read_length[0] == 0 and read_length[1] >= len(wt)):
+                    # convert to AA
+                    variant_mut = []
+                    for mut in mutation:
+                        pos = int(mut.split('_')[0])-1
+                        if mut.strip('*').split('_')[1] in codon_chart:
+                            if codon_chart[mut.strip('*').split('_')[1]] != codon_chart[wt.seq[pos*3:pos*3+3]]:
+                                variant_mut.append(mut.split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]])
+                        else:
+                            variant_mut.append(mut)
+                    if variant_mut:
+                        try:
+                            variants['+'.join(variant_mut)] += 1
+                        except KeyError:
+                            variants['+'.join(variant_mut)] = 1
+        else:
+            if variant_check and (not app.variantfull or (app.variantfull and read_length[0] == 0 and read_length[1] >= len(wt))):
+                variants['WT'] += 1
         if sum(tmp_wt_count) > 1:  # and not indel:
             wt_positions = [xi for xi, x in enumerate(tmp_wt_count) if x]  # all positions wt codon was found
             for wt_idx in wt_positions:
@@ -344,7 +352,7 @@ def write_output(mutation_dict, variants, wt_count, wt, outfile):
 
 
 def david_paired_analysis(mut_files, wt_files, app, log):
-    percentage_reads = list(range(0, app.reads, int(app.reads/99)))
+    #percentage_reads = list(range(0, app.reads, int(app.reads/99)))
     outfile = os.path.splitext(mut_files)[0].split('.fastq')[0]
     ## Mutation Pairs ##
     mutation_pair_dict = {}
@@ -648,9 +656,23 @@ def map_structure(structure_file, matrix, min_q, max_q, average, name):
 
 
 
-def calc_enrichment(app, root, base, selected, name, mincount, structure_file):
-    base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
-    selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+def calc_enrichment(app, root, base, selected, name, mincount, structure_file, muts_file):
+    if muts_file:
+        # filter base for only codons in muts_file
+        muts = pd.read_csv(muts_file, sep='\t', header=None)
+        # split text into position and codon
+        muts = muts[0].str.split('_', expand=True)
+        muts.columns = ['position', 'codon']
+        muts['position'] = muts['position'].astype(int)
+        muts['codon'] = muts['codon'].astype(str)
+        # filter base and selected for only positions and codons in muts
+        base = base[base['position'].isin(muts['position']) & base['codon'].isin(muts['codon'])]
+        selected = selected[selected['position'].isin(muts['position']) & selected['codon'].isin(muts['codon'])]
+        base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+        selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+    else:
+        base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+        selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
     read_count = 0
     # combine into one dataframe
     if 'position' in list(base.columns):
@@ -693,7 +715,7 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file):
         # color matrix based on count_matrix
         matrix = matrix.append(wt_seq)
         count_matrix = count_matrix.append(wt_seq)
-        for i in range(1, len(matrix.columns)):
+        for i in matrix.keys().values.tolist():
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
         # synonymous mutations replacement
         for row in [x for x in matrix.index if '*' in x and not '*' == x]:
@@ -715,6 +737,7 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file):
         writer = pd.ExcelWriter(name + 'combined_matrix.xlsx', engine='xlsxwriter')
         matrix.to_excel(writer, sheet_name='Enrichment')
         count_matrix.to_excel(writer, sheet_name='Counts')
+        writer.close()
         # align to structure
         if structure_file:
             quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])
@@ -768,6 +791,9 @@ def combine(app, root, dataset, combineBy, name, threshold, structure_file):
     g = sns.PairGrid(tmpdf[[x for x in df.columns if 'score' in x]])
     g.map_diag(sns.histplot)
     g.map_offdiag(sns.regplot)
+    # add r2 value
+    for i, j in zip(*np.triu_indices_from(g.axes, 1)):
+        g.axes[i, j].annotate('r2 = ' + str(round(tmpdf[[x for x in df.columns if 'score' in x]].corr().iloc[i, j] ** 2, 3)), (0.1, 0.9), xycoords='axes fraction', ha='center', va='center')
     plt.show()
     plt.pause(1)
     read_count = 0
@@ -894,14 +920,26 @@ def combine(app, root, dataset, combineBy, name, threshold, structure_file):
         matrix = matrix.append(wt_seq)
         for i in range(1, len(matrix.columns)):
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
+        # remove nan row
+        matrix = matrix.dropna(axis=0, how='all')
         # synonymous mutations replacement
-        for row in [x for x in matrix.index if '*' in x and not '*' == x]:
-            for col in matrix.columns:
-                if not np.isnan(matrix.loc[row, col]):
-                    matrix.loc[row.strip('*'), col] = matrix.loc[row, col]
+        for row in [x for x in matrix.index]:
+            if '*' in row and not '*' == row:
+                for col in matrix.columns:
+                    if not np.isnan(matrix.loc[row, col]):
+                        matrix.loc[row.strip('*'), col] = matrix.loc[row, col]
         aa_order = ['WT_AA', 'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
         matrix = matrix.reindex(aa_order)
         count_matrix = count_matrix.reindex(aa_order)
+        # calculate UMAP and plot
+        #reducer = umap.UMAP()
+        #embedding = reducer.fit_transform(matrix.drop(['*', 'WT_AA'], axis=0).dropna(axis=1, how='all'))
+        #embedding = pd.DataFrame(embedding, columns=['x', 'y'])
+        # plot embedding
+        #p = ggplot(embedding) + aes(x='x', y='y') + geom_point() + theme_minimal() + \
+        #    geom_text(data=embedding) + aes(x='x', y='y', label=matrix.drop(['*', 'WT_AA'], axis=0).dropna(axis=1, how='all').index)
+        #print(p)
+        # calculate average
         matrix['Average'] = matrix.drop('WT_AA').mean(axis=1, skipna=True)
         # move average to the beginning
         matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
