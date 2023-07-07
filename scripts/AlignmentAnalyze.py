@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import sys
 import numpy as np
 import pandas as pd
 import re
@@ -12,8 +13,10 @@ import os
 import matplotlib.pyplot as plt
 from plotnine import *
 import seaborn as sns
-import pymol
-#import umap
+from sklearn.linear_model import LinearRegression
+#import pymol
+import umap
+#import umap.plot
 
 
 script_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../bbmap/current/'))
@@ -671,50 +674,84 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file, m
         base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
         selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
     else:
-        base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
-        selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+        if not selected.empty:
+            base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+            selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+        else:
+            # loop through base and groupby position
+            tmp_base = base[0]
+            tmp_base = tmp_base.groupby([x for x in tmp_base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+            df = tmp_base[[x for x in tmp_base.columns if x not in ['codon']]]
+            for tmp_base in base[1:]:
+                tmp_base = tmp_base.groupby([x for x in tmp_base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+                df = pd.merge(df, tmp_base[[x for x in tmp_base.columns if x not in ['codon']]], left_on=['position', 'AA'], right_on=['position', 'AA'], how='outer')
     read_count = 0
     # combine into one dataframe
     if 'position' in list(base.columns):
-        df = pd.merge(base, selected, left_on=['position', 'AA'], right_on=['position', 'AA'], suffixes=('_base', '_select'), how='outer')
-        df = df.fillna(0)
-        percentage_reads = list(range(0, len(df), int(len(df) / 99) + (len(df) % 99 > 0)))
-        root.update_idletasks()
-        app.progress['value'] = 0
-        root.update()
-        # by AA position
-        wt_seq = pd.DataFrame()
-        for i in df.position.unique():
-            selection = df.loc[df.position == i, :]
-            wt_seq.loc['WT_AA', i] = (selection.loc[selection['count_base'].idxmax(), 'AA'])
-            inp_count = sum(selection.loc[:, 'count_base'])+1
-            sel_count = sum(selection.loc[:, 'count_select'])+1
-            for select, row in selection.iterrows():
-                inp_score = selection.loc[select, 'count_base'] + 1
-                sel_score = selection.loc[select, 'count_select'] + 1
-                score = math.log(sel_score / sel_count) - math.log(inp_score / inp_count)
-                se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
-                df.loc[select, 'base_frequency'] = inp_score / inp_count
-                df.loc[select, 'select_frequency'] = sel_score / sel_count
-                df.loc[select, 'score'] = score
-                df.loc[select, 'std_error'] = se
-                read_count += 1
-                if read_count in percentage_reads:
-                    root.update_idletasks()
-                    app.progress['value'] += 1
-                    root.update()
+        if not selected.empty:
+            df = pd.merge(base, selected, left_on=['position', 'AA'], right_on=['position', 'AA'], suffixes=('_base', '_select'), how='outer')
+            df = df.fillna(0)
+            percentage_reads = list(range(0, len(df), int(len(df) / 99) + (len(df) % 99 > 0)))
+            root.update_idletasks()
+            app.progress['value'] = 0
+            root.update()
+            # by AA position
+            wt_seq = pd.DataFrame()
+            for i in df.position.unique():
+                selection = df.loc[df.position == i, :]
+                wt_seq.loc['WT_AA', i] = (selection.loc[selection['count_base'].idxmax(), 'AA'])
+                inp_count = sum(selection.loc[:, 'count_base'])+1
+                sel_count = sum(selection.loc[:, 'count_select'])+1
+                for select, row in selection.iterrows():
+                    inp_score = selection.loc[select, 'count_base'] + 1
+                    sel_score = selection.loc[select, 'count_select'] + 1
+                    score = math.log(sel_score / sel_count) - math.log(inp_score / inp_count)
+                    se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
+                    df.loc[select, 'base_frequency'] = inp_score / inp_count
+                    df.loc[select, 'select_frequency'] = sel_score / sel_count
+                    df.loc[select, 'score'] = score
+                    df.loc[select, 'std_error'] = se
+                    read_count += 1
+                    if read_count in percentage_reads:
+                        root.update_idletasks()
+                        app.progress['value'] += 1
+                        root.update()
+        else:
+            wt_seq = pd.DataFrame()
+            tmp_df = pd.DataFrame()
+            linear_regressor = LinearRegression()
+            for i in df.position.unique():
+                selection = df.loc[df.position == i, :]
+                wt_seq.loc['WT_AA', i] = (selection.loc[selection['0_count'].idxmax(), 'AA'])
+                # loop through each count and calculate frequency
+                for column in [x for x in selection.columns if x not in ['position', 'AA']]:
+                    selection.loc[:, column+'_freq'] = selection[column] / sum(selection[column])
+                # calculate slope of each row with the freq columns
+                freqs = selection[[x for x in selection.columns if '_freq' in x]]
+                for irow in freqs.index:
+                    x = np.arange(0, len(freqs.columns))
+                    y = freqs.loc[irow, ].values
+                    # find index of nan in y
+                    nan_index = np.argwhere(np.isnan(y))
+                    if len(nan_index) < len(y) - 1:
+                        # remove nan from x and y
+                        x = np.delete(x, nan_index)
+                        y = np.delete(y, nan_index)
+                        fit = linear_regressor.fit(x.reshape(-1, 1), y.reshape(-1, 1))
+                        tmp_df.loc[irow, 'score'] = fit.coef_[0][0]
+            df = pd.merge(df, tmp_df, left_index=True, right_index=True)
         df.to_csv(name, index=False)
         df['mutation'] = df['position'].astype(str) + '_' + df['AA']
         # create matrix
-        df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount), ]
+        if not selected.empty:
+            df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount), ]
+        else:
+            df = df.loc[df[[x for x in df.columns if 'count' in x]].sum(axis=1) > mincount, ]
         matrix = df.pivot_table(index='AA', columns='position', values='score', aggfunc=np.mean)
-        count_matrix = df.pivot_table(index='AA', columns='position',
-                                      values='count_base', aggfunc=np.sum) + \
-                       df.pivot_table(index='AA', columns='position',
-                                      values='count_select', aggfunc=np.sum)
+
         # color matrix based on count_matrix
-        matrix = matrix.append(wt_seq)
-        count_matrix = count_matrix.append(wt_seq)
+        matrix = pd.concat([matrix, wt_seq])
+
         for i in matrix.keys().values.tolist():
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
         # synonymous mutations replacement
@@ -724,7 +761,7 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file, m
                     matrix.loc[row.strip('*'), col] = matrix.loc[row, col]
         aa_order = ['WT_AA', 'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
         matrix = matrix.reindex(aa_order)
-        count_matrix = count_matrix.reindex(aa_order)
+
         matrix['Average'] = matrix.drop('WT_AA').mean(axis=1)
         # move average to the beginning
         matrix = matrix[['Average'] + [c for c in matrix if c not in ['Average']]]
@@ -734,16 +771,23 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file, m
                      'Positive': ['R', 'K', 'H'], 'Negative': ['D', 'E']}
         for aa_group in aa_groups:
             matrix.loc[aa_group] = matrix.loc[aa_groups[aa_group]].mean(axis=0)
-        writer = pd.ExcelWriter(name + 'combined_matrix.xlsx', engine='xlsxwriter')
+        writer = pd.ExcelWriter(name.replace('results.csv','') + 'combined_matrix.xlsx', engine='xlsxwriter')
         matrix.to_excel(writer, sheet_name='Enrichment')
-        count_matrix.to_excel(writer, sheet_name='Counts')
+        if not selected.empty:
+            count_matrix = df.pivot_table(index='AA', columns='position',
+                                          values='count_base', aggfunc=np.sum) + \
+                           df.pivot_table(index='AA', columns='position',
+                                          values='count_select', aggfunc=np.sum)
+            count_matrix = pd.concat([count_matrix,wt_seq])
+            count_matrix = count_matrix.reindex(aa_order)
+            count_matrix.to_excel(writer, sheet_name='Counts')
         writer.close()
         # align to structure
         if structure_file:
             quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])
             average = matrix.loc['AveragePosition'].mean()
             map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], average, name)
-    else:
+    if 'position' not in list(base.columns):
         # by variant
         df = pd.merge(base, selected, left_on=['mutation'], right_on=['mutation'],
                       suffixes=('_base', '_select'), how='outer')
@@ -851,7 +895,7 @@ def combine(app, root, dataset, combineBy, name, threshold, structure_file):
                     app.progress['value'] += 1
                     root.update()
         df = df.loc[(df['count_combined_base'] > threshold) | (df['count_combined_select'] > threshold), ]
-        df['log_count'] = np.log10(df['count_combined_base'] + df['count_combined_select'])
+        df.loc[:, 'log_count'] = np.log10(df['count_combined_base'] + df['count_combined_select'])
         # volcano plot
         p = ggplot(df) + aes(x='combined_score', y='log_count') + geom_point() + theme_minimal() + \
             geom_text(data=df.loc[df['combined_score'] > 2]) + aes(x='combined_score', y='log_count', label='mutation')
@@ -917,7 +961,7 @@ def combine(app, root, dataset, combineBy, name, threshold, structure_file):
                                       values='count_combined_select', aggfunc=np.sum)
         missing_positions = list(set(range(1, max(df['position'])+1)).difference(matrix.columns))
         matrix[missing_positions] = np.nan
-        matrix = matrix.append(wt_seq)
+        matrix = pd.concat([matrix,wt_seq])
         for i in range(1, len(matrix.columns)):
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
         # remove nan row
@@ -931,14 +975,6 @@ def combine(app, root, dataset, combineBy, name, threshold, structure_file):
         aa_order = ['WT_AA', 'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W', 'R', 'H', 'K', 'D', 'E', 'S', 'T', 'N', 'Q', 'C', 'G', 'P', '*']
         matrix = matrix.reindex(aa_order)
         count_matrix = count_matrix.reindex(aa_order)
-        # calculate UMAP and plot
-        #reducer = umap.UMAP()
-        #embedding = reducer.fit_transform(matrix.drop(['*', 'WT_AA'], axis=0).dropna(axis=1, how='all'))
-        #embedding = pd.DataFrame(embedding, columns=['x', 'y'])
-        # plot embedding
-        #p = ggplot(embedding) + aes(x='x', y='y') + geom_point() + theme_minimal() + \
-        #    geom_text(data=embedding) + aes(x='x', y='y', label=matrix.drop(['*', 'WT_AA'], axis=0).dropna(axis=1, how='all').index)
-        #print(p)
         # calculate average
         matrix['Average'] = matrix.drop('WT_AA').mean(axis=1, skipna=True)
         # move average to the beginning
@@ -953,6 +989,16 @@ def combine(app, root, dataset, combineBy, name, threshold, structure_file):
         matrix.to_excel(writer, sheet_name='Enrichment')
         count_matrix.to_excel(writer, sheet_name='Counts')
         writer.close()
+        # cluster data
+        # calculate UMAP and plot
+        #umap_data = matrix.drop(['*', 'WT_AA'], axis=0).dropna(axis=1, how='all')
+        # remove columns with more than 3 NaNs
+        #umap_data = umap_data.loc[:, umap_data.isna().sum(axis=0) < 3]
+        # replace nan with 0
+        #umap_data = umap_data.fillna(0).transpose()
+        #mapper = umap.UMAP().fit(umap_data)
+        # plot mapper
+        #umap.plot.points(mapper)
         # align to structure
         if structure_file:
             quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])

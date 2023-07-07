@@ -24,7 +24,7 @@ def main(raw_args=None):
     parser.add_argument('-a', '--aamuts', help='File containing the amino acid mutations to be analyzed')
     parser.add_argument('-o', '--output', help='Output file directory and name')
     parser.add_argument('-pb', '--pacbio', help='Use pacbio sequencing', action='store_true')
-    parser.add_argument('-v', '--variant', help='Variant Analysis', action='store_false')
+    parser.add_argument('-v', '--variant', help='Variant Analysis', action='store_true')
     parser.add_argument('-vfull', '--variantfull', help='Full length Variant Analysis', action='store_true')
     parser.add_argument('-c', '--correlation', help='Correlation Analysis', action='store_true')
     parser.add_argument('-i', '--indel', help='Analyze indel mutations', action='store_true')

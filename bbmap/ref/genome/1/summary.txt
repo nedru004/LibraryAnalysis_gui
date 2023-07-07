@@ -1,0 +1,13 @@
+#Summary
+#Generated on	Mon Mar 27 15:24:39 CDT 2023
+#Version	5
+chroms	1
+bases	65088
+defined	49088
+undefined	16000
+contigs	1
+scaffolds	1
+interpad	2000
+source	C:\Users\david.nedrud\Downloads\Phage\tuna_genomic.fna
+bytes	49761
+last modified	1679514184000

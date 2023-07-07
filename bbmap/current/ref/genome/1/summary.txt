@@ -1,13 +1,13 @@
 #Summary
-#Generated on	Fri May 06 10:17:46 CDT 2022
+#Generated on	Tue Jun 13 09:13:38 CDT 2023
 #Version	5
 chroms	1
-bases	16077
-defined	77
+bases	16399
+defined	399
 undefined	16000
 contigs	1
 scaffolds	1
 interpad	300
-source	C:\Users\david.nedrud\Documents\NOTES\DATA\30-648766303\rev_1.fasta
-bytes	87
-last modified	1651850037436
+source	C:\Users\david.nedrud.AD\Downloads\IL2.fa
+bytes	425
+last modified	1677521838574
