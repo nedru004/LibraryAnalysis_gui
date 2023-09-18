@@ -18,7 +18,7 @@ def main(raw_args=None):
     parser = argparse.ArgumentParser(description='Analyze sequencing data for mutations')
     parser.add_argument('-wt', '--wtseq', help='FASTA file containing the wildtype sequence', required=True)
     parser.add_argument('-s', '--seq', help='FASTQ file containing the sequencing reads', required=True, nargs='+')
-    parser.add_argument('-p', '--paired', help='FASTQ file containing the paired sequencing reads')
+    parser.add_argument('-p', '--paired', help='FASTQ file containing the paired sequencing reads', default=False)
     parser.add_argument('-d', '--domains', help='FASTA file containing the domains of the wildtype sequence')
     parser.add_argument('-m', '--muts', help='File containing the mutations to be analyzed')
     parser.add_argument('-a', '--aamuts', help='File containing the amino acid mutations to be analyzed')
@@ -81,6 +81,7 @@ def main(raw_args=None):
 
     ### Process Sequencing Records ###
     # merge paired reads
+    print(args.pacbio)
     if paired_sequencing_file and not os.path.exists(rootname+'_corrected.fastq.gz'):
         print(f'Merging paired reads. ({os.path.basename(rootname)})\n')
         sequencing_file = AlignmentAnalyze.correct_pairs(sequencing_file, paired_sequencing_file)
@@ -93,9 +94,9 @@ def main(raw_args=None):
         print(message)
         print('Aligning sequencing reads to reference.\n')
         if not args.pacbio:
-            AlignmentAnalyze.align_all_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', max_gap=len(wt_seq))
+            AlignmentAnalyze.align_all_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', args.par, max_gap=len(wt_seq))
         else:
-            AlignmentAnalyze.align_pacbio_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam')
+            AlignmentAnalyze.align_pacbio_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', args.par)
     else:
         print('Sequencing files already aligned. Using existing sam file')
 

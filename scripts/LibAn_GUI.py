@@ -11,9 +11,11 @@ import sys
 
 
 def run_LibAn():
-    arguments = ['-s', app.seq_file[0], '-p', app.paired_file, '-wt', app.wt_file,
+    arguments = ['-s', app.seq_file[0], '-wt', app.wt_file,
                 '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel.get()]
     # run through the rest of the arguments
+    if app.paired_file:
+        arguments.extend(['-p', app.paired_file])
     if app.variant_check.get():
         arguments.append('-v')
     if app.variantfull_check.get():
@@ -122,7 +124,7 @@ class Application(tk.Frame):
 
         self.paired = tk.Button(self, text='Input paired sequencing file (fastq)', command=self.browse_paired)
         self.paired.grid(column=0)
-        self.paired_file = None
+        self.paired_file = False
         self.paired_label = tk.Label(self)
         self.paired_label.grid(column=0)
 
@@ -248,7 +250,7 @@ class Application(tk.Frame):
             self.paired.config(bg='green', activebackground='green', relief=tk.SUNKEN)
             self.paired_label.config(text=os.path.basename(self.paired_file))
         else:
-            self.paired_file = None
+            self.paired_file = False
 
     def browse_wt(self):
         self.wt_file = filedialog.askopenfilename(title="Select a File")
@@ -365,7 +367,7 @@ class Application(tk.Frame):
             # sequencing_file, paired_sequencing_file = AlignmentAnalyze.correct_pairs(sequencing_file, paired_sequencing_file)
         else:
             sequencing_file = self.barcode_file[0]
-            paired_sequencing_file = None
+            paired_sequencing_file = False
         adapters = filedialog.askopenfilename(title="Select adapter fasta file")
         AlignmentAnalyze.find_barcodes(sequencing_file, paired_sequencing_file, adapters)
 

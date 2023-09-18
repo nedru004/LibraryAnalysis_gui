@@ -433,21 +433,21 @@ def wt_count(file_name, chunk_start, chunk_end):
 
 
 
-def align_all_bbmap(sequencing_file, reference, sam_file, bbmap_script=f'java -cp {script_path} align2.BBMap',
-                    max_gap=500, paired_sequencing_file=None):
+def align_all_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f'java -cp {script_path} align2.BBMap',
+                    max_gap=500, paired_sequencing_file=False):
     if paired_sequencing_file:
         command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
-                  f"in2={paired_sequencing_file} maxindel={max_gap} local outm={sam_file}"
+                  f"in2={paired_sequencing_file} maxindel={max_gap} local t={par} outm={sam_file}"
     else:
             command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
-                    f"maxindel={max_gap} local outm={sam_file}"
+                    f"maxindel={max_gap} local t={par} outm={sam_file}"
     print(command)
     ret = os.system(command)
     assert ret == 0
 
-def align_pacbio_bbmap(sequencing_file, reference, sam_file, bbmap_script=f'java -cp {script_path} align2.BBMap'):
+def align_pacbio_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f'java -cp {script_path} align2.BBMapPacBio'):
     command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
-              f"qin=33 outm={sam_file}"
+              f"t=par outm={sam_file}"
     print(command)
     ret = os.system(command)
     assert ret == 0
