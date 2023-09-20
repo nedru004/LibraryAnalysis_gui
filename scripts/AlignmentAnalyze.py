@@ -162,7 +162,7 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
         except:
             break
         if '@' in tmp_r1[0]:
-            if any(1 for x in tmp_r1 if 'bowtie' in x):
+            if any(1 for x in tmp_r1 if 'bowtie' in x or 'minimap' in x):
                 bowtie = 1
             continue
         # if read is paired to the next file
@@ -185,7 +185,8 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                 raise Exception('Paired read not found')
         else:  # only if there is one read
             read_list = [tmp_r1]
-        tmpcounts = {tmp_r1[0]}  # initialize name
+        tmpcounts = set()  # initialize name
+        read_name = tmp_r1[0]
         tmp_wt_count = [0]*int(len(wt)/3+1)
         read_length = [100000, 0]
         for r3 in read_list:
@@ -198,20 +199,22 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                 fragment_cigar = list(filter(None, re.split(r'(\d+)', r3[5])))
                 for cigar in [fragment_cigar[ii:ii+2] for ii in range(0, len(fragment_cigar), 2)]:
                     if 'X' == cigar[1] or ('M' == cigar[1] and bowtie == 1):
-                        # this is a substitution
+                        # this might be a substitution
                         for i_sub in range(int(cigar[0])):  # not sure how this range works
                             codon_diff = (ref + i_sub) % 3  # find the correct frame
                             i_codon = r3[9][read + i_sub - codon_diff:read + i_sub - codon_diff + 3].upper()
                             wt_codon = str(wt.seq[ref + i_sub - codon_diff: ref + i_sub - codon_diff + 3])
-                            # record codon if you can see the entire codon
-                            if read + i_sub - codon_diff + 3 < len(r3[9]) and read + i_sub - codon_diff >= 0 and 'N' not in i_codon and '-' not in i_codon:
-                                # only record if confident about entire codon
-                                quality_codon = r3[10][read + i_sub - codon_diff:read + i_sub - codon_diff + 3]
-                                if all([ord(x)-33 > quality_nt for x in quality_codon]):
-                                    if codon_chart[i_codon] == codon_chart[wt_codon] and not bowtie:
-                                        tmpcounts.add(str(int((ref + i_sub - codon_diff) / 3 + 1)) + '_' + i_codon + '*')
-                                    else:
-                                        tmpcounts.add(str(int((ref+i_sub-codon_diff)/3+1)) + '_' + i_codon)
+                            # record if codons are different
+                            if i_codon != wt_codon:
+                                # record codon if you can see the entire codon
+                                if read + i_sub - codon_diff + 3 < len(r3[9]) and read + i_sub - codon_diff >= 0 and 'N' not in i_codon and '-' not in i_codon:
+                                    # only record if confident about entire codon
+                                    quality_codon = r3[10][read + i_sub - codon_diff:read + i_sub - codon_diff + 3]
+                                    if all([ord(x)-33 > quality_nt for x in quality_codon]):
+                                        if codon_chart[i_codon] == codon_chart[wt_codon] and not bowtie:
+                                            tmpcounts.add(str(int((ref + i_sub - codon_diff) / 3 + 1)) + '_' + i_codon + '*')
+                                        else:
+                                            tmpcounts.add(str(int((ref+i_sub-codon_diff)/3+1)) + '_' + i_codon)
                         ref += int(cigar[0])
                         read += int(cigar[0])
                     elif '=' == cigar[1]:
@@ -249,27 +252,27 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                         raise TypeError('Cigar format not found')
                 read_length[1] = max(read_length[1], ref)
         if len(tmpcounts) > 1:  # only record if mutations found (first entry is name of read)
-            # append data
-            sorted_counts = sorted(tmpcounts, reverse=True)
-            file.write(','.join(sorted_counts) + '\n')
-            mutation = sorted_counts[1:]
+            # sort data by position
+            tmpcounts = list(tmpcounts)
+            mutation = [tmpcounts[i[0]] for i in sorted(enumerate([int(x.split('_')[0]) for x in tmpcounts]), key=lambda x:x[1])]
+            file.write(read_name + ',' + ','.join(mutation) + '\n')
             if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
                 if app.muts:
-                    for mut in sorted(mutation):
+                    for mut in mutation:
                         if mut.strip('*') in app.muts_list:
                             try:
                                 mutation_dict[mut] += 1  # simple dictionary of mutations
                             except KeyError:
                                 mutation_dict[mut] = 1
                 elif app.aamuts:
-                    for mut in sorted(mutation):
+                    for mut in mutation:
                         if mut.strip('*').split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]] in app.aamuts_list:
                             try:
                                 mutation_dict[mut] += 1  # simple dictionary of mutations
                             except KeyError:
                                 mutation_dict[mut] = 1
                 else:
-                    for mut in sorted(mutation):
+                    for mut in mutation:
                         try:
                             mutation_dict[mut.strip('*')] += 1  # simple dictionary of mutations
                         except KeyError:
@@ -280,7 +283,10 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                     variant_mut = []
                     for mut in mutation:
                         pos = int(mut.split('_')[0])-1
-                        if mut.strip('*').split('_')[1] in codon_chart:
+                        if app.muts:
+                            if mut.strip('*') in app.muts_list:
+                                variant_mut.append(mut.split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]])
+                        elif mut.strip('*').split('_')[1] in codon_chart:
                             if codon_chart[mut.strip('*').split('_')[1]] != codon_chart[wt.seq[pos*3:pos*3+3]]:
                                 variant_mut.append(mut.split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]])
                         else:

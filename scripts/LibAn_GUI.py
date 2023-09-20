@@ -11,9 +11,12 @@ import sys
 
 
 def run_LibAn():
-    arguments = ['-s', app.seq_file[0], '-wt', app.wt_file,
-                '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel.get()]
+    arguments = ['-wt', app.wt_file, '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel.get()]
     # run through the rest of the arguments
+    if app.seq_file:
+        arguments.extend(['-s', app.seq_file[0]])
+    if app.sam_file:
+        arguments.extend(['-sam', app.sam_file])
     if app.paired_file:
         arguments.extend(['-p', app.paired_file])
     if app.variant_check.get():
@@ -131,6 +134,10 @@ class Application(tk.Frame):
         self.wtseq = tk.Button(self, text='Input wildtype sequence (fasta)', command=self.browse_wt)
         self.wtseq.grid(column=0)
         self.wt_file = None
+
+        self.sam = tk.Button(self, text='Aligned File (SAM)', command=self.browse_sam)
+        self.sam.grid(column=0)
+        self.sam_file = None
 
         tk.Label(self, text='Minimum Read Quality Score').grid(column=0)
         self.quality = tk.Entry(self, textvariable=tk.StringVar(self, '15'))
@@ -258,6 +265,13 @@ class Application(tk.Frame):
             self.wtseq.config(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.wt_file = None
+
+    def browse_sam(self):
+        self.sam_file = filedialog.askopenfilename(title="Select a File")
+        if self.sam_file != '':
+            self.sam.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+        else:
+            self.sam_file = None
 
     def browse_mut(self):
         self.muts_file = filedialog.askopenfilename(title="Select a File")

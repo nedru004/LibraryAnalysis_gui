@@ -17,7 +17,8 @@ def _count_generator(reader):
 def main(raw_args=None):
     parser = argparse.ArgumentParser(description='Analyze sequencing data for mutations')
     parser.add_argument('-wt', '--wtseq', help='FASTA file containing the wildtype sequence', required=True)
-    parser.add_argument('-s', '--seq', help='FASTQ file containing the sequencing reads', required=True, nargs='+')
+    parser.add_argument('-sam', '--sam', help='SAM file containing the aligned reads', required=False)
+    parser.add_argument('-s', '--seq', help='FASTQ file containing the sequencing reads', default=None)
     parser.add_argument('-p', '--paired', help='FASTQ file containing the paired sequencing reads', default=False)
     parser.add_argument('-d', '--domains', help='FASTA file containing the domains of the wildtype sequence')
     parser.add_argument('-m', '--muts', help='File containing the mutations to be analyzed')
@@ -48,16 +49,18 @@ def main(raw_args=None):
     assert args.muts is None or os.path.isfile(args.muts), f"given domains file, '{args.muts}', does not exist"
     assert args.aamuts is None or os.path.isfile(args.aamuts), f"given domains file, '{args.aamuts}', does not exist"
 
-    sequencing_file = args.seq[0]
-    print(sequencing_file)
+    sequencing_file = args.seq
     paired_sequencing_file = args.paired
     # output files
-    rootname = os.path.splitext(sequencing_file)[0].split('.fastq')[0]
+    if args.seq:
+        rootname = os.path.splitext(args.seq)[0].split('.fastq')[0]
+    elif args.sam:
+        rootname = os.path.splitext(args.sam)[0].split('.sam')[0]
 
     # create a log file containing inputs, number of reads, number of aligned reads, and number of aligned reads with at least one mutation
     log = open(rootname + '_log.txt', 'w')
-    log.write(f"Sequencing File: {sequencing_file} \n")
-    log.write(f"Paired Sequencing File: {paired_sequencing_file} \n")
+    log.write(f"Sequencing File: {args.seq} \n")
+    log.write(f"Paired Sequencing File: {args.paired} \n")
 
     # initialize some variables
     programstart = time.time()
@@ -67,8 +70,11 @@ def main(raw_args=None):
     if args.muts:
         args.muts_list = []
         file = open(args.muts, 'r')
-        for line in file:
-            args.muts_list.append(line.strip())
+        while True:
+            line = file.readline().strip()
+            codon = file.readline().strip()
+            if not codon: break
+            args.muts_list.append(''.join([i for i in line if i.isdigit()]) + '_' + codon)
         file.close()
     if args.aamuts:
         args.aamuts_list = []
@@ -81,7 +87,6 @@ def main(raw_args=None):
 
     ### Process Sequencing Records ###
     # merge paired reads
-    print(args.pacbio)
     if paired_sequencing_file and not os.path.exists(rootname+'_corrected.fastq.gz'):
         print(f'Merging paired reads. ({os.path.basename(rootname)})\n')
         sequencing_file = AlignmentAnalyze.correct_pairs(sequencing_file, paired_sequencing_file)
@@ -94,9 +99,9 @@ def main(raw_args=None):
         print(message)
         print('Aligning sequencing reads to reference.\n')
         if not args.pacbio:
-            AlignmentAnalyze.align_all_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', args.par, max_gap=len(wt_seq))
+            AlignmentAnalyze.align_all_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', args.parallel, max_gap=len(wt_seq))
         else:
-            AlignmentAnalyze.align_pacbio_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', args.par)
+            AlignmentAnalyze.align_pacbio_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', args.parallel)
     else:
         print('Sequencing files already aligned. Using existing sam file')
 
