@@ -138,6 +138,84 @@ def david_call_parallel_variants(sam_file, wt, outfile, app):
         wt_count = [sum(x) for x in zip(wt_count, answer[2])]
     write_output(mutation_dict, variants, wt_count, wt, outfile)
 
+
+def parse_cigar(r3, wt, quality_nt, tmpcounts, read_length, tmp_wt_count, indel_size, bowtie):
+    # set index
+    ref = int(r3[3]) - 1  # subtract 1 for python numbering
+    read_length[0] = min(read_length[0], ref)
+    read = 0
+    # cycle through each codon until end of read or end of reference sequence
+    fragment_cigar = list(filter(None, re.split(r'(\d+)', r3[5])))
+    for cigar in [fragment_cigar[ii:ii + 2] for ii in range(0, len(fragment_cigar), 2)]:
+        if 'X' == cigar[1] or ('M' == cigar[1] and bowtie == 1):
+            # this might be a substitution
+            for i_sub in range(int(cigar[0])):  # not sure how this range works
+                codon_diff = (ref + i_sub) % 3  # find the correct frame
+                i_codon = r3[9][read + i_sub - codon_diff:read + i_sub - codon_diff + 3].upper()
+                wt_codon = str(wt.seq[ref + i_sub - codon_diff: ref + i_sub - codon_diff + 3])
+                # record if codons are different
+                if i_codon != wt_codon:
+                    # record codon if you can see the entire codon
+                    if read + i_sub - codon_diff + 3 < len(
+                            r3[9]) and read + i_sub - codon_diff >= 0 and 'N' not in i_codon and '-' not in i_codon:
+                        # only record if confident about entire codon
+                        quality_codon = r3[10][read + i_sub - codon_diff:read + i_sub - codon_diff + 3]
+                        if all([ord(x) - 33 > quality_nt for x in quality_codon]):
+                            if codon_chart[i_codon] == codon_chart[wt_codon] and not bowtie:
+                                tmpcounts.add(str(int((ref + i_sub - codon_diff) / 3 + 1)) + '_' + i_codon + '*')
+                            else:
+                                tmpcounts.add(str(int((ref + i_sub - codon_diff) / 3 + 1)) + '_' + i_codon)
+            ref += int(cigar[0])
+            read += int(cigar[0])
+        elif '=' == cigar[1]:
+            # this is a perfect match
+            codon_start = ref + ref % 3
+            codon_end = ref + int(cigar[0]) - (int(cigar[0]) % 3)
+            if codon_end - codon_start >= 3:  # if the perfect match spans an entire codon then count it
+                # make sure this doesn't exceed the length of the gene using min
+                wt_range = range(int(codon_start / 3 + 1), min(int((codon_end - 3) / 3 + 1) + 1, int(len(wt) / 3)),
+                                 1)  # need to add 1 for range
+                for wt_i in wt_range:
+                    tmp_wt_count[wt_i] = 1
+            ref += int(cigar[0])
+            read += int(cigar[0])
+        elif 'D' == cigar[1]:
+            # this is a deletion
+            tmpcounts.add(str(int(ref / 3 + 1)) + '_' + 'del' + cigar[0])
+            # insert '-' for gap
+            r3[9] = r3[9][:read] + '-' * int(cigar[0]) + r3[9][read:]
+            r3[10] = r3[10][:read] + '-' * int(cigar[0]) + r3[9][read:]
+            read += int(cigar[0])
+            ref += int(cigar[0])
+            indel_size += int(cigar[0])
+        elif 'I' == cigar[1]:
+            # this is an insertion
+            insertion = r3[9][read:read + int(cigar[0])].upper()
+            tmpcounts.add(str(int(ref / 3 + 1)) + '_' + 'ins' + insertion)
+            read += int(cigar[0])
+            indel_size += int(cigar[0])
+        elif 'S' == cigar[1]:
+            # soft clipping
+            read += int(cigar[0])
+        elif 'M' == cigar[1] and not bowtie:
+            # bad read (N) - ignore
+            ref += int(cigar[0])
+            read += int(cigar[0])
+        elif 'H' == cigar[1]:
+            # hard clipping
+            pass
+        elif 'P' == cigar[1]:
+            # padding
+            pass
+        elif 'N' == cigar[1]:
+            # skipped region from the reference
+            ref += int(cigar[0])
+        else:
+            raise TypeError('Cigar format not found')
+    read_length[1] = max(read_length[1], ref)
+    return [tmpcounts, read_length, tmp_wt_count, indel_size]
+
+
 def david_call_variants(sam_file, start, end, wt, outfile, app):
     quality = int(app.minq)
     quality_nt = int(app.minb)
@@ -146,6 +224,7 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
     loop_read.seek(start)
     mutation_dict = {}
     variants = {'WT': 0}
+    variant_tracking = {'WT': {'read_names': []}}
     wt_count = [0]*int(len(wt)/3)
     file = open(outfile + '_' + str(start) + '.csv', 'w')
     wt_file = open(outfile + '_' + str(start) + '_wt.csv', 'w')
@@ -155,6 +234,7 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
     while True:  # loop through each read from ngs
         try:
             line = next(loop_read)
+            read_position = start
             tmp_r1 = line.split('\t')
             start += len(line)
             if start > end:
@@ -187,128 +267,163 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
             read_list = [tmp_r1]
         tmpcounts = set()  # initialize name
         read_name = tmp_r1[0]
+        indel_size = 0
         tmp_wt_count = [0]*int(len(wt)/3+1)
         read_length = [100000, 0]
         for r3 in read_list:
             if (bin(int(r3[1]))[::-1][1] or bin(int(r3[1]))[::-1][3]) and int(r3[4]) > quality:  # if forward read is aligned and higher than quality threshold
-                # set index
-                ref = int(r3[3])-1  # subtract 1 for python numbering
-                read_length[0] = min(read_length[0], ref)
-                read = 0
-                # cycle through each codon until end of read or end of reference sequence
-                fragment_cigar = list(filter(None, re.split(r'(\d+)', r3[5])))
-                for cigar in [fragment_cigar[ii:ii+2] for ii in range(0, len(fragment_cigar), 2)]:
-                    if 'X' == cigar[1] or ('M' == cigar[1] and bowtie == 1):
-                        # this might be a substitution
-                        for i_sub in range(int(cigar[0])):  # not sure how this range works
-                            codon_diff = (ref + i_sub) % 3  # find the correct frame
-                            i_codon = r3[9][read + i_sub - codon_diff:read + i_sub - codon_diff + 3].upper()
-                            wt_codon = str(wt.seq[ref + i_sub - codon_diff: ref + i_sub - codon_diff + 3])
-                            # record if codons are different
-                            if i_codon != wt_codon:
-                                # record codon if you can see the entire codon
-                                if read + i_sub - codon_diff + 3 < len(r3[9]) and read + i_sub - codon_diff >= 0 and 'N' not in i_codon and '-' not in i_codon:
-                                    # only record if confident about entire codon
-                                    quality_codon = r3[10][read + i_sub - codon_diff:read + i_sub - codon_diff + 3]
-                                    if all([ord(x)-33 > quality_nt for x in quality_codon]):
-                                        if codon_chart[i_codon] == codon_chart[wt_codon] and not bowtie:
-                                            tmpcounts.add(str(int((ref + i_sub - codon_diff) / 3 + 1)) + '_' + i_codon + '*')
-                                        else:
-                                            tmpcounts.add(str(int((ref+i_sub-codon_diff)/3+1)) + '_' + i_codon)
-                        ref += int(cigar[0])
-                        read += int(cigar[0])
-                    elif '=' == cigar[1]:
-                        # this is a perfect match
-                        codon_start = ref + ref % 3
-                        codon_end = ref + int(cigar[0]) - (int(cigar[0]) % 3)
-                        if codon_end - codon_start >= 3:  # if the perfect match spans an entire codon then count it
-                            # make sure this doesnt exceed the length of the gene using min
-                            wt_range = range(int(codon_start/3+1), min(int((codon_end-3)/3+1)+1, int(len(wt)/3)), 1)  # need to add 1 for range
-                            for wt_i in wt_range:
-                                tmp_wt_count[wt_i] = 1
-                        ref += int(cigar[0])
-                        read += int(cigar[0])
-                    elif 'D' == cigar[1]:
-                        # this is a deletion
-                        tmpcounts.add(str(int(ref/3+1))+'_'+'del'+cigar[0])
-                        # insert '-' for gap
-                        r3[9] = r3[9][:read] + '-'*int(cigar[0]) + r3[9][read:]
-                        r3[10] = r3[10][:read] + '-'*int(cigar[0]) + r3[9][read:]
-                        read += int(cigar[0])
-                        ref += int(cigar[0])
-                    elif 'I' == cigar[1]:
-                        # this is an insertion
-                        insertion = r3[9][read:read+int(cigar[0])].upper()
-                        tmpcounts.add(str(int(ref/3+1)) + '_' + 'ins' + insertion)
-                        read += int(cigar[0])
-                    elif 'S' == cigar[1]:
-                        # soft clipping
-                        read += int(cigar[0])
-                    elif 'M' == cigar[1] and not bowtie:
-                        # bad read (N) - ignore
-                        ref += int(cigar[0])
-                        read += int(cigar[0])
-                    else:
-                        raise TypeError('Cigar format not found')
-                read_length[1] = max(read_length[1], ref)
-        if len(tmpcounts) > 1:  # only record if mutations found (first entry is name of read)
-            # sort data by position
-            tmpcounts = list(tmpcounts)
-            mutation = [tmpcounts[i[0]] for i in sorted(enumerate([int(x.split('_')[0]) for x in tmpcounts]), key=lambda x:x[1])]
-            file.write(read_name + ',' + ','.join(mutation) + '\n')
-            if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
-                if app.muts:
-                    for mut in mutation:
-                        if mut.strip('*') in app.muts_list:
-                            try:
-                                mutation_dict[mut] += 1  # simple dictionary of mutations
-                            except KeyError:
-                                mutation_dict[mut] = 1
-                elif app.aamuts:
-                    for mut in mutation:
-                        if mut.strip('*').split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]] in app.aamuts_list:
-                            try:
-                                mutation_dict[mut] += 1  # simple dictionary of mutations
-                            except KeyError:
-                                mutation_dict[mut] = 1
-                else:
-                    for mut in mutation:
-                        try:
-                            mutation_dict[mut.strip('*')] += 1  # simple dictionary of mutations
-                        except KeyError:
-                            mutation_dict[mut.strip('*')] = 1
-            if variant_check or correlation_check:
-                if not app.variantfull or (app.variantfull and read_length[0] == 0 and read_length[1] >= len(wt)):
-                    # convert to AA
-                    variant_mut = []
-                    for mut in mutation:
-                        pos = int(mut.split('_')[0])-1
+                [tmpcounts, read_length, tmp_wt_count, indel_size] = parse_cigar(r3, wt, quality_nt, tmpcounts, read_length, tmp_wt_count, indel_size, bowtie)
+                if len(tmpcounts) > 0:  # only record if mutations found
+                    # sort data by position
+                    tmpcounts = list(tmpcounts)
+                    mutation = [tmpcounts[i[0]] for i in sorted(enumerate([int(x.split('_')[0]) for x in tmpcounts]), key=lambda x:x[1])]
+                    file.write(read_name + ',' + ','.join(mutation) + '\n')
+                    if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
                         if app.muts:
-                            if mut.strip('*') in app.muts_list:
-                                variant_mut.append(mut.split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]])
-                        elif mut.strip('*').split('_')[1] in codon_chart:
-                            if codon_chart[mut.strip('*').split('_')[1]] != codon_chart[wt.seq[pos*3:pos*3+3]]:
-                                variant_mut.append(mut.split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]])
+                            for mut in mutation:
+                                if mut.strip('*') in app.muts_list:
+                                    try:
+                                        mutation_dict[mut] += 1  # simple dictionary of mutations
+                                    except KeyError:
+                                        mutation_dict[mut] = 1
                         else:
-                            variant_mut.append(mut)
-                    if variant_mut:
-                        try:
-                            variants['+'.join(variant_mut)] += 1
-                        except KeyError:
-                            variants['+'.join(variant_mut)] = 1
-        else:
-            if variant_check and (not app.variantfull or (app.variantfull and read_length[0] == 0 and read_length[1] >= len(wt))):
-                variants['WT'] += 1
-        if sum(tmp_wt_count) > 1:  # and not indel:
-            wt_positions = [xi for xi, x in enumerate(tmp_wt_count) if x]  # all positions wt codon was found
-            for wt_idx in wt_positions:
-                wt_count[wt_idx] += 1  # only add to total count after both reads have been processed
-            if correlation_check:
-                wt_file.write(','.join(str(x) for x in wt_positions) + '\n')
+                            for mut in mutation:
+                                try:
+                                    mutation_dict[mut.strip('*')] += 1  # simple dictionary of mutations
+                                except KeyError:
+                                    mutation_dict[mut.strip('*')] = 1
+                    if variant_check or correlation_check:
+                        if not app.variantfull or (app.variantfull and read_length[0] == 0 and read_length[1] >= len(wt) and indel_size < app.max_indel):
+                            # convert to AA
+                            variant_mut = []
+                            for mut in mutation:
+                                if app.muts:
+                                    if mut.strip('*') in app.muts_list:
+                                        variant_mut.append(mut)
+                                else:
+                                    variant_mut.append(mut)
+                            if variant_mut:
+                                other_mut = [x for x in mutation if x not in variant_mut]
+                                if '+'.join(variant_mut) in variants.keys():
+                                    variants['+'.join(variant_mut)] += 1
+                                    # store other_mut in a dictionary
+                                    variant_tracking['+'.join(variant_mut)]['read_names'].extend([read_position])
+                                    for muto in other_mut:
+                                        if muto in variant_tracking['+'.join(variant_mut)].keys():
+                                            variant_tracking['+'.join(variant_mut)][muto] += 1
+                                        else:
+                                            variant_tracking['+'.join(variant_mut)][muto] = 1
+                                else:
+                                    variants['+'.join(variant_mut)] = 1
+                                    # store other_mut in a dictionary
+                                    variant_tracking['+'.join(variant_mut)] = {}
+                                    variant_tracking['+'.join(variant_mut)]['read_names'] = [read_position]
+                                    for muto in other_mut:
+                                        variant_tracking['+'.join(variant_mut)][muto] = 1
+                            else:
+                                for muto in mutation:
+                                    if muto in variant_tracking['WT'].keys():
+                                        variant_tracking['WT'][muto] += 1
+                                        variant_tracking['WT']['read_names'].extend([read_position])
+                                    else:
+                                        variant_tracking['WT'][muto] = 1
+                                        variant_tracking['WT']['read_names'].extend([read_position])
+                else:
+                    if variant_check and (not app.variantfull or (app.variantfull and read_length[0] == 0 and read_length[1] >= len(wt) and indel_size < app.max_indel)):
+                        variants['WT'] += 1
+                if sum(tmp_wt_count) > 1:  # and not indel:
+                    wt_positions = [xi for xi, x in enumerate(tmp_wt_count) if x]  # all positions wt codon was found
+                    for wt_idx in wt_positions:
+                        wt_count[wt_idx] += 1  # only add to total count after both reads have been processed
+                    if correlation_check:
+                        wt_file.write(','.join(str(x) for x in wt_positions) + '\n')
     loop_read.close()
     file.close()
     wt_file.close()
     # os.remove(sam_file)
+    # loop through variant_tracking and find mutations that are above a threshold
+    if variant_check:
+        variants = {'WT': 0}
+        app.variant_count = 10
+        app.variant_percent = 0.33
+        for variant in variant_tracking.keys():
+            # total number of reads
+            total_reads = len(variant_tracking[variant]['read_names'])
+            # find mutations in the dictionary that are above threshold
+            if variant == 'WT':
+                other_mutations = [k for k, v in variant_tracking[variant].items() if k != 'read_names' and (
+                            v > app.variant_count and v / total_reads > 0.01)]
+            else:
+                other_mutations = [k for k, v in variant_tracking[variant].items() if k != 'read_names' and (v > app.variant_count and v / total_reads > app.variant_percent)]
+            # rerun analysis for the reads associated with that mutation
+            loop_read = open(sam_file, 'r')
+            for read in variant_tracking[variant]['read_names']:
+                # go to that read in the file
+                loop_read.seek(read)
+                line = next(loop_read)
+                tmp_r1 = line.split('\t')
+                # if read is paired to the next file
+                if tmp_r1[6] == '=':
+                    line = next(loop_read)
+                    tmp_r2 = line.split('\t')
+                    start += len(line)
+                    if start > end:
+                        break
+                    if tmp_r1[0] == tmp_r2[0]:  # paired reads have the same name
+                        # identify forward strand
+                        if int(f'{int(tmp_r1[1]):012b}'[::-1][4]):
+                            r1 = tmp_r2
+                            r2 = tmp_r1
+                        else:
+                            r1 = tmp_r1
+                            r2 = tmp_r2
+                        read_list = [r1, r2]
+                    else:
+                        raise Exception('Paired read not found')
+                else:  # only if there is one read
+                    read_list = [tmp_r1]
+                tmpcounts = set()  # initialize name
+                read_name = tmp_r1[0]
+                indel_size = 0
+                tmp_wt_count = [0] * int(len(wt) / 3 + 1)
+                read_length = [100000, 0]
+                for r3 in read_list:
+                    [tmpcounts, read_length, tmp_wt_count, indel_size] = parse_cigar(r3, wt, quality_nt,
+                                                                                         tmpcounts, read_length,
+                                                                                         tmp_wt_count, indel_size,
+                                                                                         bowtie)
+                    if len(tmpcounts) > 0:  # only record if mutations found
+                        # sort data by position
+                        tmpcounts = list(tmpcounts)
+                        mutation = [tmpcounts[i[0]] for i in
+                                    sorted(enumerate([int(x.split('_')[0]) for x in tmpcounts]),
+                                           key=lambda x: x[1])]
+                        if app.indel or (all(['ins' not in x for x in mutation]) and all(
+                                ['del' not in x for x in mutation])):  # only recording if no indels were found
+                            if app.muts:
+                                for mut in mutation:
+                                    if mut.strip('*') in other_mutations:
+                                        try:
+                                            mutation_dict[mut] += 1  # simple dictionary of mutations
+                                        except KeyError:
+                                            mutation_dict[mut] = 1
+                        if not app.variantfull or (app.variantfull and read_length[0] == 0 and read_length[1] >= len(wt) and indel_size < app.max_indel):
+                            # convert to AA
+                            variant_mut = []
+                            for mut in mutation:
+                                if app.muts:
+                                    if mut.strip('*') in app.muts_list + other_mutations:
+                                        if mut.strip('*').split('_')[1] in codon_chart.keys():
+                                            variant_mut.append(mut.split('_')[0] + '_' + codon_chart[mut.strip('*').split('_')[1]])
+                                        else:
+                                            variant_mut.append(mut)
+                            if variant_mut:
+                                if '+'.join(variant_mut) in variants.keys():
+                                    variants['+'.join(variant_mut)] += 1
+                                else:
+                                    variants['+'.join(variant_mut)] = 1
+                            else:
+                                variants['WT'] += 1
     return mutation_dict, variants, wt_count
 
 
@@ -328,11 +443,15 @@ def write_output(mutation_dict, variants, wt_count, wt, outfile):
         f.write('position,codon,AA,count\n')
         for mut in mutation_dict.keys():
             f.write(','.join(mut.split('_'))+',')
-            try:
+            if mut.split('_')[1] in codon_chart.keys():
                 f.write(codon_chart[mut.split('_')[1]]+',')
-            except KeyError:
+            elif '*' in mut.split('_')[1]:
                 f.write(codon_chart[mut.split('_')[1].strip('*')]+'*,')
+            else:
+                f.write(mut.split('_')[1]+',')
             f.write(str(mutation_dict[mut])+'\n')
+    # remove in and del from mutation_dict
+    mutation_dict = {k: v for k, v in mutation_dict.items() if 'ins' not in k and 'del' not in k}
     mutations = pd.DataFrame({'name': list(mutation_dict.keys()), 'count': list(mutation_dict.values())})
     mutations[['position', 'AA']] = mutations['name'].str.split('_', expand=True)
     for row in range(len(mutations)):
@@ -451,9 +570,9 @@ def align_all_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f'ja
     ret = os.system(command)
     assert ret == 0
 
-def align_pacbio_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f'java -cp {script_path} align2.BBMapPacBio'):
+def align_pacbio_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f''):
     command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
-              f"t=par outm={sam_file}"
+              f"-O 24 outm={sam_file}"
     print(command)
     ret = os.system(command)
     assert ret == 0
@@ -597,7 +716,7 @@ def align_domain(app, sequencing_file, reference, domains_file, domain_out_file)
                                 else:
                                     raise TypeError('Cigar format not found')
                             if codon_end - codon_start >= 3:
-                                # make sure this doesnt exceed the length of the gene using min
+                                # make sure this doesn't exceed the length of the gene using min
                                 wt_range = range(int(codon_start / 3) + 1, min(int(codon_end/3) + 1, int(len(wt) / 3)), 1)  # need to add 1 for range
                                 for wt_i in wt_range:
                                     wt_count[wt_i] += 1

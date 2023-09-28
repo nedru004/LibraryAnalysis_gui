@@ -144,7 +144,7 @@ class Application(tk.Frame):
         self.quality.grid(column=0)
 
         tk.Label(self, text='Minimum Base Quality Score').grid(column=0)
-        self.quality_nt = tk.Entry(self, textvariable=tk.StringVar(self, '15'))
+        self.quality_nt = tk.Entry(self, textvariable=tk.StringVar(self, '7'))
         self.quality_nt.grid(column=0)
 
         self.pacbio_check = tk.Checkbutton(self, text='PacBio analysis', variable=self.pacbio)
@@ -161,6 +161,7 @@ class Application(tk.Frame):
         self.correlation.grid(column=0)
 
         self.indel = tk.Checkbutton(self, text='InDel analysis', variable=self.count_indels)
+        self.indel.select()
         self.indel.grid(column=0)
 
         tk.Label(self, text='Other').grid(column=0)

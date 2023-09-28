@@ -35,6 +35,7 @@ def main(raw_args=None):
     parser.add_argument('-f', '--force', help='Force overwrite of existing files', action='store_true')
     parser.add_argument('-n', '--nuc', help='Analyze nucleotide mutations', action='store_true')
     parser.add_argument('-aa', '--aa', help='Analyze amino acid mutations', action='store_true')
+    parser.add_argument('-indel', '--max_indel', help='Maximum indel size to analyze', default=20)
 
     args = parser.parse_args(raw_args)
 
