@@ -15,7 +15,7 @@ from plotnine import *
 import seaborn as sns
 from sklearn.linear_model import LinearRegression
 #import pymol
-import umap
+#import umap
 #import umap.plot
 
 
@@ -140,11 +140,25 @@ def david_call_parallel_variants(sam_file, wt, outfile, app):
 
 
 def parse_cigar(r3, wt, quality_nt, tmpcounts, read_length, tmp_wt_count, indel_size, bowtie):
+    # r3 is the cigar string split into a list
+    # 0 is the read name
+    # 1 is the flag (0 is forward, 16 is reverse)
+    # 2 is the reference name
+    # 3 is the reference position
+    # 4 is the mapping quality
+    # 5 is the cigar string
+    # 6 is the mate reference name
+    # 7 is the mate reference position
+    # 8 is the template length
+    # 9 is the read sequence
+    # 10 is the read quality
+    # 11 is the optional fields
+    # 12 is the optional fields
     # set index
     ref = int(r3[3]) - 1  # subtract 1 for python numbering
     read_length[0] = min(read_length[0], ref)
     read = 0
-    # cycle through each codon until end of read or end of reference sequence
+    # cycle through each codon until end of read or end of reference sequencee
     fragment_cigar = list(filter(None, re.split(r'(\d+)', r3[5])))
     for cigar in [fragment_cigar[ii:ii + 2] for ii in range(0, len(fragment_cigar), 2)]:
         if 'X' == cigar[1] or ('M' == cigar[1] and bowtie == 1):
@@ -235,7 +249,7 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
         try:
             line = next(loop_read)
             read_position = start
-            tmp_r1 = line.split('\t')
+            tmp_r1 = line.strip().split('\t')
             start += len(line)
             if start > end:
                 break
@@ -248,7 +262,7 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
         # if read is paired to the next file
         if tmp_r1[6] == '=':
             line = next(loop_read)
-            tmp_r2 = line.split('\t')
+            tmp_r2 = line.strip().split('\t')
             start += len(line)
             if start > end:
                 break
@@ -275,8 +289,8 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                 [tmpcounts, read_length, tmp_wt_count, indel_size] = parse_cigar(r3, wt, quality_nt, tmpcounts, read_length, tmp_wt_count, indel_size, bowtie)
                 if len(tmpcounts) > 0:  # only record if mutations found
                     # sort data by position
-                    tmpcounts = list(tmpcounts)
-                    mutation = [tmpcounts[i[0]] for i in sorted(enumerate([int(x.split('_')[0]) for x in tmpcounts]), key=lambda x:x[1])]
+                    tmpcounts_too = list(tmpcounts)
+                    mutation = [tmpcounts_too[i[0]] for i in sorted(enumerate([int(x.split('_')[0]) for x in tmpcounts_too]), key=lambda x:x[1])]
                     file.write(read_name + ',' + ','.join(mutation) + '\n')
                     if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
                         if app.muts:
@@ -343,6 +357,7 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
     # os.remove(sam_file)
     # loop through variant_tracking and find mutations that are above a threshold
     if variant_check:
+        print('Rechecking variants for unknown mutations')
         variants = {'WT': 0}
         app.variant_count = 10
         app.variant_percent = 0.33
@@ -594,13 +609,14 @@ def align_domain(app, sequencing_file, reference, domains_file, domain_out_file)
             end3 -= 1
             prime3 = domain.seq[end3:]
     domain_counts = pd.DataFrame()
-    quality = int(app.quality.get())
-    quality_nt = int(app.quality_nt.get())
+    quality = int(app.minq)
+    quality_nt = int(app.minb)
     wt = Bio.SeqIO.read(reference, 'fasta').seq
     wt_count = [0] * int(len(wt) / 3 + 1)
     fraction = 100/len(domains)
     for domain in domains:
         domain_reference = os.path.join(os.path.dirname(domains_file), domain.id + '.fasta')
+        # create a reference file for each domain
         with open(domain_reference, 'w') as outfile:
             outfile.write(f">{domain.id}\n{domain.seq}\n")
             outfile.close()
@@ -611,7 +627,7 @@ def align_domain(app, sequencing_file, reference, domains_file, domain_out_file)
                    'in=%s' % sequencing_file,
                    'outm=%s' % insert_filtered_fnames,
                    'mink=%d' % end5,
-                   'hdist=0 mm=f maq=20']
+                   'mm=f kmask=N']
         print('Running: \n\t%s' % ' '.join(command))
         ret = os.system(' '.join(command))
         assert ret == 0, 'bbduk.sh failed for %s!' % domain_reference
@@ -623,30 +639,22 @@ def align_domain(app, sequencing_file, reference, domains_file, domain_out_file)
                    'in=%s' % insert_filtered_fnames,
                    'outm=%s' % insert_bbone_filtered_fnames,
                    'mink=%d' % 12,
-                   'hdist=1 mm=f ']
+                   'hdist=1']
         print('Running: \n\t%s' % ' '.join(command))
         ret = os.system(' '.join(command))
         assert ret == 0, 'bbduk.sh failed for %s!' % reference
 
         print('##### Find Domain position in read #####')
+        # if long read use minimap2
+
         filtered_masked_fnames = os.path.join(os.path.dirname(domains_file), domain.id + '_domain.sam')
-        command = [f'java -cp {script_path} align2.BBMapPacBioSkimmer',
+        command = [f'java -cp {script_path} align2.BBMap',
                    'ref=%s' % domain_reference,
                    'in=%s' % insert_bbone_filtered_fnames,
                    'out=%s' % filtered_masked_fnames,
                    'touppercase=t nodisk overwrite local vslow minratio=0.01 k=8']
         ret = os.system(' '.join(command))
         assert ret == 0, 'bbmap.sh failed for %s!' % domain_reference
-
-        print('##### Aligning to backbone #####')
-        aligned_fnames = os.path.join(os.path.dirname(domains_file), domain.id + '_filtered_trimmed_5p_aligned.sam')
-        command = [f'java -cp {script_path} align2.BBMap',
-                   'ref=%s' % reference,
-                   'in=%s' % insert_bbone_filtered_fnames,
-                   'out=%s' % aligned_fnames,
-                   'touppercase=t nodisk overwrite local minratio=0.1']
-        ret = os.system(' '.join(command))
-        assert ret == 0, 'bbmap.sh failed for %s!' % reference
 
         # write to csv and create table
         read_length = [100000, 0]

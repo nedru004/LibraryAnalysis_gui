@@ -94,6 +94,10 @@ def main(raw_args=None):
     else:
         print('Sequencing files already merged. Using existing corrected files')
 
+    if args.domains:
+        print(f'Finding Domains\n')
+        AlignmentAnalyze.align_domain(args, sequencing_file, args.wtseq, args.domains, rootname)
+
     # align reads (using bbmap)
     if not os.path.exists(f'{rootname}.sam'):  # and args.aamuts:
         message = f'Aligning all sequences from {sequencing_file} to {wt_seq} using bbmap.'
@@ -135,9 +139,6 @@ def main(raw_args=None):
         AlignmentAnalyze.david_paired_analysis(rootname + '_variants.csv', rootname + '_wt.csv', args, log)
     # os.system(f'java -cp ../bbmap/current/ var2.CallVariants2 in={rootname}.sam ref={args.wtseq} ploidy=1 out={rootname}.vcf 32bit')
 
-    if args.domains:
-        print(f'Finding Domains\n')
-        AlignmentAnalyze.align_domain(args, sequencing_file, args.wtseq, args.domains, rootname)
 
     seq_analyze_time = time.time() - programstart
     time_per_seq = round(seq_analyze_time / reads * 1000, 3)
