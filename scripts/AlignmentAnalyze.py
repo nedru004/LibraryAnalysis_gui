@@ -289,7 +289,8 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                 [tmpcounts, read_length, tmp_wt_count, indel_size] = parse_cigar(r3, wt, quality_nt, tmpcounts, read_length, tmp_wt_count, indel_size, bowtie)
                 if len(tmpcounts) > 0:  # only record if mutations found
                     # sort data by position
-                    tmpcounts_too = list(tmpcounts)
+                    # turn tmpcounts into a list without affecting tmpcounts
+                    tmpcounts_too = list(tmpcounts.copy())
                     mutation = [tmpcounts_too[i[0]] for i in sorted(enumerate([int(x.split('_')[0]) for x in tmpcounts_too]), key=lambda x:x[1])]
                     file.write(read_name + ',' + ','.join(mutation) + '\n')
                     if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
@@ -576,18 +577,26 @@ def wt_count(file_name, chunk_start, chunk_end):
 def align_all_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f'java -cp {script_path} align2.BBMap',
                     max_gap=500, paired_sequencing_file=False):
     if paired_sequencing_file:
-        command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
-                  f"in2={paired_sequencing_file} maxindel={max_gap} local t={par} outm={sam_file}"
-    else:
+        if par:
             command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
-                    f"maxindel={max_gap} local t={par} outm={sam_file}"
+                      f"in2={paired_sequencing_file} maxindel={max_gap} t={par} local outm={sam_file}"
+        else:
+            command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
+                  f"in2={paired_sequencing_file} maxindel={max_gap} local outm={sam_file}"
+    else:
+        if par:
+            command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
+                      f"maxindel={max_gap} local t={par} outm={sam_file}"
+        else:
+            command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
+                    f"maxindel={max_gap} local outm={sam_file}"
     print(command)
     ret = os.system(command)
     assert ret == 0
 
-def align_pacbio_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f''):
-    command = f"{bbmap_script} ref={reference} in={sequencing_file} " \
-              f"-O 24 outm={sam_file}"
+def align_long_read(sequencing_file, reference, sam_file, par, script=f'./minimap2-2.26_x64-linux/minimap2 '):
+    command = f"{script} {reference} {sequencing_file} -x map-ont" \
+              f"-O 15,24 -a --eqx > {sam_file}"
     print(command)
     ret = os.system(command)
     assert ret == 0
