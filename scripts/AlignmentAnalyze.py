@@ -594,7 +594,7 @@ def align_all_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f'ja
     ret = os.system(command)
     assert ret == 0
 
-def align_long_read(sequencing_file, reference, sam_file, par, script=f'./minimap2-2.26_x64-linux/minimap2 '):
+def align_long_read(sequencing_file, reference, sam_file, par, script=f'../minimap2-2.26_x64-linux/minimap2 '):
     command = f"{script} {reference} {sequencing_file} -x map-ont" \
               f"-O 15,24 -a --eqx > {sam_file}"
     print(command)
