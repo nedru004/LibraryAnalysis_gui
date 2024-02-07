@@ -813,8 +813,8 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file, m
         # filter base and selected for only positions and codons in muts
         base = base[base['position'].isin(muts['position']) & base['codon'].isin(muts['codon'])]
         selected = selected[selected['position'].isin(muts['position']) & selected['codon'].isin(muts['codon'])]
-        base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
-        selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+        base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False)['count'].sum()
+        selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False)['count'].sum()
     else:
         if not selected.empty:
             base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
@@ -1079,8 +1079,9 @@ def combine(app, root, dataset, combineBy, name, threshold, structure_file):
             wt_seq = pd.DataFrame()
             for i in df.position.unique():
                 selection = df.loc[df.position == i, :]
-                wt_seq.loc['WT_AA', i] = (selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA'])
-                df.loc[df.position == i, 'WT_AA'] = selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA']
+                if not np.isnan(selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax()):
+                    wt_seq.loc['WT_AA', i] = (selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA'])
+                    df.loc[df.position == i, 'WT_AA'] = selection.loc[selection[[x for x in selection.keys() if 'count_base' in x][0]].idxmax(), 'AA']
                 read_count += 1
                 if read_count in percentage_reads:
                     root.update_idletasks()
