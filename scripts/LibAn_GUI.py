@@ -82,7 +82,8 @@ def run_batch():
 
 
 def enrichment():
-    AlignmentAnalyze.calc_enrichment(app, root, app.base, app.select, app.selectcount.split('.csv')[0] + '_results.csv', int(app.mincount.get()), app.pdb, app.muts_file)
+    assert os.path.isfile(app.wt_file), f"given refrence/wildtype file name '{app.wt_file}' does not exist!"
+    AlignmentAnalyze.calc_enrichment(app, root, app.base, app.select, app.selectcount.split('.csv')[0] + '_results.csv', int(app.mincount.get()), app.wt_file, app.pdb, app.muts_file)
 
 
 def combine():

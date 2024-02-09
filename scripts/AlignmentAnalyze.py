@@ -801,31 +801,38 @@ def map_structure(structure_file, matrix, min_q, max_q, average, name):
 
 
 
-def calc_enrichment(app, root, base, selected, name, mincount, structure_file, muts_file):
+def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structure_file, muts_file):
+    wt_nt_seq = Bio.SeqIO.read(wt_file, "fasta").upper()
+    # translate wt_nt_seq to AA into a dataframe
+    wt_seq = pd.DataFrame({'WT_AA': wt_nt_seq.translate()}).T
     if muts_file:
         # filter base for only codons in muts_file
         muts = pd.read_csv(muts_file, sep='\t', header=None)
         # split text into position and codon
         muts = muts[0].str.split('_', expand=True)
         muts.columns = ['position', 'codon']
+        # add wt codons to muts
+        for idx, i in enumerate(range(1, len(wt_nt_seq), 3)):
+            muts = pd.concat([muts, pd.DataFrame({"position":[idx+1], "codon":[str(wt_nt_seq.seq[i-1:i+2])]})], ignore_index=True)
         muts['position'] = muts['position'].astype(int)
         muts['codon'] = muts['codon'].astype(str)
         # filter base and selected for only positions and codons in muts
-        base = base[base['position'].isin(muts['position']) & base['codon'].isin(muts['codon'])]
-        selected = selected[selected['position'].isin(muts['position']) & selected['codon'].isin(muts['codon'])]
-        base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False)['count'].sum()
-        selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False)['count'].sum()
+        # must match the same position and codon in the same row
+        base = base.merge(muts, on=['position', 'codon'])
+        selected = selected.merge(muts, on=['position', 'codon'])
+        base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).sum()
+        selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).sum()
     else:
         if not selected.empty:
             base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
-            selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+            selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False)['count'].agg('sum')
         else:
             # loop through base and groupby position
             tmp_base = base[0]
-            tmp_base = tmp_base.groupby([x for x in tmp_base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+            tmp_base = tmp_base.groupby([x for x in tmp_base.columns if x not in ['count', 'codon']], as_index=False)['count'].agg('sum')
             df = tmp_base[[x for x in tmp_base.columns if x not in ['codon']]]
             for tmp_base in base[1:]:
-                tmp_base = tmp_base.groupby([x for x in tmp_base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+                tmp_base = tmp_base.groupby([x for x in tmp_base.columns if x not in ['count', 'codon']], as_index=False)['count'].agg('sum')
                 df = pd.merge(df, tmp_base[[x for x in tmp_base.columns if x not in ['codon']]], left_on=['position', 'AA'], right_on=['position', 'AA'], how='outer')
     read_count = 0
     # combine into one dataframe
@@ -838,10 +845,8 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file, m
             app.progress['value'] = 0
             root.update()
             # by AA position
-            wt_seq = pd.DataFrame()
             for i in df.position.unique():
                 selection = df.loc[df.position == i, :]
-                wt_seq.loc['WT_AA', i] = (selection.loc[selection['count_base'].idxmax(), 'AA'])
                 inp_count = sum(selection.loc[:, 'count_base'])+1
                 sel_count = sum(selection.loc[:, 'count_select'])+1
                 for select, row in selection.iterrows():
@@ -859,12 +864,10 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file, m
                         app.progress['value'] += 1
                         root.update()
         else:
-            wt_seq = pd.DataFrame()
             tmp_df = pd.DataFrame()
             linear_regressor = LinearRegression()
             for i in df.position.unique():
                 selection = df.loc[df.position == i, :]
-                wt_seq.loc['WT_AA', i] = (selection.loc[selection['0_count'].idxmax(), 'AA'])
                 # loop through each count and calculate frequency
                 for column in [x for x in selection.columns if x not in ['position', 'AA']]:
                     selection.loc[:, column+'_freq'] = selection[column] / sum(selection[column])
@@ -892,7 +895,7 @@ def calc_enrichment(app, root, base, selected, name, mincount, structure_file, m
         matrix = df.pivot_table(index='AA', columns='position', values='score', aggfunc=np.mean)
 
         # color matrix based on count_matrix
-        matrix = pd.concat([matrix, wt_seq])
+        matrix = pd.concat([wt_seq, matrix])
 
         for i in matrix.keys().values.tolist():
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
