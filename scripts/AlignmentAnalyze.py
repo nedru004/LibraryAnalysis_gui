@@ -293,7 +293,8 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                     tmpcounts_too = list(tmpcounts.copy())
                     mutation = [tmpcounts_too[i[0]] for i in sorted(enumerate([int(x.split('_')[0]) for x in tmpcounts_too]), key=lambda x:x[1])]
                     file.write(read_name + ',' + ','.join(mutation) + '\n')
-                    if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):  # only recording if no indels were found
+                    # only record if no indels were found
+                    if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):
                         if app.muts:
                             for mut in mutation:
                                 if mut.strip('*') in app.muts_list:
@@ -318,6 +319,7 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                                 else:
                                     variant_mut.append(mut)
                             if variant_mut:
+                                # find other mutations not designed
                                 other_mut = [x for x in mutation if x not in variant_mut]
                                 if '+'.join(variant_mut) in variants.keys():
                                     variants['+'.join(variant_mut)] += 1
@@ -357,7 +359,7 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
     wt_file.close()
     # os.remove(sam_file)
     # loop through variant_tracking and find mutations that are above a threshold
-    if variant_check:
+    if variant_check and app.muts:
         print('Rechecking variants for unknown mutations')
         variants = {'WT': 0}
         app.variant_count = 10

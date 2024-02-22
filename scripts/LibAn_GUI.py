@@ -390,6 +390,6 @@ class Application(tk.Frame):
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry('900x850')
+    root.geometry('900x950')
     app = Application(master=root)
     app.mainloop()
