@@ -902,7 +902,7 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
         for i in matrix.keys().values.tolist():
             matrix.loc[matrix.loc['WT_AA', i], i] = np.nan
         # synonymous mutations replacement
-        for row in [x for x in matrix.index if '*' in x and not '*' == x]:
+        for row in [x for x in matrix.index if not pd.isnull(x) and '*' in x and not '*' == x]:
             for col in matrix.columns:
                 if not np.isnan(matrix.loc[row, col]):
                     matrix.loc[row.strip('*'), col] = matrix.loc[row, col]
@@ -918,7 +918,7 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
                      'Positive': ['R', 'K', 'H'], 'Negative': ['D', 'E']}
         for aa_group in aa_groups:
             matrix.loc[aa_group] = matrix.loc[aa_groups[aa_group]].mean(axis=0)
-        writer = pd.ExcelWriter(name.replace('results.csv','') + 'combined_matrix.xlsx', engine='xlsxwriter')
+        writer = pd.ExcelWriter(name.replace('results.csv', '') + 'combined_matrix.xlsx', engine='xlsxwriter')
         matrix.to_excel(writer, sheet_name='Enrichment')
         if not selected.empty:
             count_matrix = df.pivot_table(index='AA', columns='position',
