@@ -24,7 +24,7 @@ def main(raw_args=None):
     parser.add_argument('-m', '--muts', help='File containing the mutations to be analyzed')
     parser.add_argument('-a', '--aamuts', help='File containing the amino acid mutations to be analyzed')
     parser.add_argument('-o', '--output', help='Output file directory and name')
-    parser.add_argument('-pb', '--pacbio', help='Use long read sequencing alignment', action='store_true')
+    parser.add_argument('-lr', '--long_read', help='Use long read sequencing alignment', action='store_true')
     parser.add_argument('-v', '--variant', help='Variant Analysis', action='store_true')
     parser.add_argument('-vfull', '--variantfull', help='Full length Variant Analysis', action='store_true')
     parser.add_argument('-c', '--correlation', help='Correlation Analysis', action='store_true')
@@ -107,7 +107,7 @@ def main(raw_args=None):
             par = None
         else:
             par = args.parallel
-        if not args.pacbio:
+        if not args.long_read:
             AlignmentAnalyze.align_all_bbmap(sequencing_file, args.wtseq, f'{rootname}.sam', par, max_gap=len(wt_seq))
         else:
             AlignmentAnalyze.align_long_read(sequencing_file, args.wtseq, f'{rootname}.sam', par)

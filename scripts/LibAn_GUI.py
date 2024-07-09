@@ -25,8 +25,8 @@ def run_LibAn():
         arguments.append('-vfull')
     if app.count_indels.get():
         arguments.append('-i')
-    if app.pacbio.get():
-        arguments.append('-pb')
+    if app.long_read.get():
+        arguments.append('-lr')
     if app.correlations_check.get():
         arguments.append('-c')
     if app.muts_file:
@@ -63,7 +63,7 @@ def run_batch():
             arguments.append('-vfull')
         if app.count_indels.get():
             arguments.append('-i')
-        if app.pacbio.get():
+        if app.long_read.get():
             arguments.append('-pb')
         if app.correlations_check.get():
             arguments.append('-c')
@@ -116,7 +116,7 @@ class Application(tk.Frame):
         self.variant_check = tk.IntVar()
         self.variantfull_check = tk.IntVar()
         self.count_indels = tk.IntVar()
-        self.pacbio = tk.IntVar()
+        self.long_read = tk.IntVar()
         self.multiply = tk.IntVar()
 
         tk.Label(self, text='NGS alignment', font=("Arial", 16, 'bold')).grid(column=0)
@@ -148,8 +148,8 @@ class Application(tk.Frame):
         self.quality_nt = tk.Entry(self, textvariable=tk.StringVar(self, '7'))
         self.quality_nt.grid(column=0)
 
-        self.pacbio_check = tk.Checkbutton(self, text='PacBio analysis', variable=self.pacbio)
-        self.pacbio_check.grid(column=0)
+        self.long_read_check = tk.Checkbutton(self, text='Long read analysis', variable=self.long_read)
+        self.long_read_check.grid(column=0)
 
         self.variant = tk.Checkbutton(self, text='Variant analysis', variable=self.variant_check)
         self.variant.select()

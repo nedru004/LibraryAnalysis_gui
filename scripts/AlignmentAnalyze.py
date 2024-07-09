@@ -20,6 +20,11 @@ from sklearn.linear_model import LinearRegression
 
 
 script_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../bbmap/current/'))
+## check if minimap2 is installed
+if os.system('minimap2 --version') != 0:
+    minimap_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../minimap2-2.26_x64-linux/minimap2 '))
+else:
+    minimap_path = 'minimap2 '
 
 codon_chart = {'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L', 'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L', 'ATT': 'I',
          'ATC': 'I', 'ATA': 'I', 'ATG': 'M', 'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V', 'TCT': 'S', 'TCC': 'S',
@@ -478,7 +483,7 @@ def write_output(mutation_dict, variants, wt_count, wt, outfile):
         else:
             mutations.loc[row, 'AA'] = codon_chart[mutations.loc[row, 'AA']]
     mutations['position'] = pd.to_numeric(mutations['position'])
-    matrix = mutations.pivot_table(index='AA', columns='position', values='count', aggfunc=sum)
+    matrix = mutations.pivot_table(index='AA', columns='position', values='count', aggfunc='sum')
     matrix.to_csv(outfile + '_matrix.csv')
     if variants:
         # plt.figure()
@@ -596,8 +601,8 @@ def align_all_bbmap(sequencing_file, reference, sam_file, par, bbmap_script=f'ja
     ret = os.system(command)
     assert ret == 0
 
-def align_long_read(sequencing_file, reference, sam_file, par, script=f'../minimap2-2.26_x64-linux/minimap2 '):
-    command = f"{script} {reference} {sequencing_file} -x map-ont" \
+def align_long_read(sequencing_file, reference, sam_file, par, script=minimap_path):
+    command = f"{script} {reference} {sequencing_file} -x map-ont " \
               f"-O 15,24 -a --eqx > {sam_file}"
     print(command)
     ret = os.system(command)
