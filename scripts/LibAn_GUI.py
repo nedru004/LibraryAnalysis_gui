@@ -54,8 +54,12 @@ def run_batch():
                 paired_files[re.sub(r'_R\d_', '', file)] = [os.path.join(batch_folder, file)]
     for key, value in paired_files.items():
         assert len(value) < 3, f"Too many files linked to '{value[0]}'"
-        arguments = ['-s', value[0], '-p', value[1], '-wt', app.wt_file,
-                     '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel.get()]
+        if len(value) == 1:
+            arguments = ['-s', value[0], '-wt', app.wt_file,
+                            '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel.get()]
+        else:
+            arguments = ['-s', value[0], '-p', value[1], '-wt', app.wt_file,
+                        '-minq', int(app.quality.get()), '-minb', int(app.quality_nt.get()), '-par', app.parallel.get()]
         # run through the rest of the arguments
         if app.variant_check.get():
             arguments.append('-v')
@@ -64,15 +68,15 @@ def run_batch():
         if app.count_indels.get():
             arguments.append('-i')
         if app.long_read.get():
-            arguments.append('-pb')
+            arguments.append('-lr')
         if app.correlations_check.get():
             arguments.append('-c')
         if app.muts_file:
-            arguments.append(['-m', app.muts_file])
+            arguments.extend(['-m', app.muts_file])
         if app.aamuts_file:
-            arguments.append(['-a', app.aamuts_file])
+            arguments.extend(['-a', app.aamuts_file])
         if app.domains_file:
-            arguments.append(['-d', app.domains_file])
+            arguments.extend(['-d', app.domains_file])
         # convert list to string
         arguments = [str(item) for item in arguments]
         print('To run Analysis, run the following command:')
@@ -161,7 +165,7 @@ class Application(tk.Frame):
         self.correlation = tk.Checkbutton(self, text='Correlation analysis', variable=self.correlations_check)
         self.correlation.grid(column=0)
 
-        self.indel = tk.Checkbutton(self, text='InDel analysis', variable=self.count_indels)
+        self.indel = tk.Checkbutton(self, text='Allow InDels or throw out reads with InDels', variable=self.count_indels)
         self.indel.select()
         self.indel.grid(column=0)
 
@@ -248,7 +252,7 @@ class Application(tk.Frame):
     def browse_seq(self):
         self.seq_file = list(filedialog.askopenfilenames(title="Select a File"))
         if self.seq_file != '':
-            self.seq.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.seq.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
             self.seq_label.config(text=os.path.basename(self.seq_file[0]))
         else:
             self.seq_file = None
@@ -256,7 +260,7 @@ class Application(tk.Frame):
     def browse_paired(self):
         self.paired_file = filedialog.askopenfilename(title="Select a File")
         if self.paired_file != '':
-            self.paired.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.paired.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
             self.paired_label.config(text=os.path.basename(self.paired_file))
         else:
             self.paired_file = False
@@ -264,60 +268,60 @@ class Application(tk.Frame):
     def browse_wt(self):
         self.wt_file = filedialog.askopenfilename(title="Select a File")
         if self.wt_file != '':
-            self.wtseq.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.wtseq.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.wt_file = None
 
     def browse_sam(self):
         self.sam_file = filedialog.askopenfilename(title="Select a File")
         if self.sam_file != '':
-            self.sam.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.sam.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.sam_file = None
 
     def browse_mut(self):
         self.muts_file = filedialog.askopenfilename(title="Select a File")
         if self.muts_file != '':
-            self.mut.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.mut.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.muts_file = None
 
     def browse_mutaa(self):
         self.aamuts_file = filedialog.askopenfilename(title="Select a File")
         if self.aamuts_file != '':
-            self.mutaa.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.mutaa.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.aamuts_file = None
 
     def browse_domains(self):
         self.domains_file = filedialog.askopenfilename(title="Select a File")
         if self.domains_file != '':
-            self.domains.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.domains.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.domains_file = None
 
     def browse_correlation(self):
         self.control_correlations_file = filedialog.askopenfilename(title="Select a File")
         if self.control_correlations_file != '':
-            self.control_correlations.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.control_correlations.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.control_correlations_file = None
 
     def browse_base(self):
         self.basecount = filedialog.askopenfilename(title="Select a File")
         if self.basecount != '':
-            self.base_button.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.base_button.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
             self.base = pd.read_csv(self.basecount)
-            self.w.config(text=os.path.basename(self.basecount))
+            self.w.configure(text=os.path.basename(self.basecount))
         else:
             self.basecount = None
 
     def browse_select(self):
         self.selectcount = filedialog.askopenfilename(title="Select a File")
         if self.selectcount != '':
-            self.select_button.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.select_button.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
             self.select = pd.read_csv(self.selectcount)
-            self.w2.config(text=os.path.basename(self.selectcount))
+            self.w2.configure(text=os.path.basename(self.selectcount))
         else:
             self.selectcount = None
 
@@ -329,7 +333,7 @@ class Application(tk.Frame):
         self.select = None
         self.selectcount = self.timecount
         while self.timecount != '':
-            self.time_button.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.time_button.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
             tmp_dataset = pd.read_csv(self.timecount)
             # loop through tmp_dataset columns but not position or AA
             if 'position' in list(tmp_dataset.columns):
@@ -349,7 +353,7 @@ class Application(tk.Frame):
     def browse_pdb(self):
         self.pdb = filedialog.askopenfilename(title="Select PDB file")
         if self.pdb != '':
-            self.pdb_button.config(bg='green', activebackground='green', relief=tk.SUNKEN)
+            self.pdb_button.configure(bg='green', activebackground='green', relief=tk.SUNKEN)
         else:
             self.pdb = None
 

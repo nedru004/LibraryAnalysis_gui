@@ -301,12 +301,31 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                     # only record if no indels were found
                     if app.indel or (all(['ins' not in x for x in mutation]) and all(['del' not in x for x in mutation])):
                         if app.muts:
-                            for mut in mutation:
-                                if mut.strip('*') in app.muts_list:
-                                    try:
-                                        mutation_dict[mut] += 1  # simple dictionary of mutations
-                                    except KeyError:
-                                        mutation_dict[mut] = 1
+                            for i, mut in enumerate(mutation):
+                                # only record if mutation is in the design list
+                                compare_mut = [x for x in app.muts_list if mut.strip('*') in x]
+                                if compare_mut:
+                                    # if a synonymous mutation repeats?
+                                    test_mut = compare_mut[0]
+                                    if '_' not in test_mut:
+                                        try:
+                                            mutation_dict[mut] += 1  # simple dictionary of mutations
+                                        except KeyError:
+                                            mutation_dict[mut] = 1
+                                    # example of a mutation paired with a synonymous mutation (137_TTT-1_CAT)
+                                    if len(test_mut) > 8:
+                                        if '-1' in test_mut and i > 0:
+                                            if int(mut.strip('*').split('_')[0]) - 1 == int(mutation[i-1].strip('*').split('_')[0]) and test_mut[-3:] == mutation[i-1].strip('*').split('_')[1]:
+                                                try:
+                                                    mutation_dict[mut] += 1  # simple dictionary of mutations
+                                                except KeyError:
+                                                    mutation_dict[mut] = 1
+                                        if '+1' in test_mut and i < len(mutation) - 1:
+                                            if int(mut.strip('*').split('_')[0]) + 1 == int(mutation[i-1].strip('*').split('_')[0]) and test_mut[-3:] == mutation[i+1].strip('*').split('_')[1]:
+                                                try:
+                                                    mutation_dict[mut] += 1  # simple dictionary of mutations
+                                                except KeyError:
+                                                    mutation_dict[mut] = 1
                         else:
                             for mut in mutation:
                                 try:
@@ -814,10 +833,17 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
     wt_seq = pd.DataFrame({'WT_AA': wt_nt_seq.translate()}).T
     if muts_file:
         # filter base for only codons in muts_file
-        muts = pd.read_csv(muts_file, sep='\t', header=None)
-        # split text into position and codon
-        muts = muts[0].str.split('_', expand=True)
-        muts.columns = ['position', 'codon']
+        # read in muts_file as text
+        muts_tmp = open(muts_file, 'r')
+        muts = muts_tmp.readlines()
+        muts_tmp.close()
+        # this file is a fasta. Need to combine every other item in the list
+        muts_positions = [x.strip('\n') for x in muts[0::2]]
+        # extract number from string
+        muts_positions = [int(re.search(r'\d+', x).group()) for x in muts_positions]
+        muts_codons = [x.strip('\n') for x in muts[1::2]]
+        # move the codon to the second column
+        muts = pd.DataFrame({'position': muts_positions, 'codon': muts_codons})
         # add wt codons to muts
         for idx, i in enumerate(range(1, len(wt_nt_seq), 3)):
             muts = pd.concat([muts, pd.DataFrame({"position":[idx+1], "codon":[str(wt_nt_seq.seq[i-1:i+2])]})], ignore_index=True)
@@ -825,13 +851,17 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
         muts['codon'] = muts['codon'].astype(str)
         # filter base and selected for only positions and codons in muts
         # must match the same position and codon in the same row
-        base = base.merge(muts, on=['position', 'codon'])
-        selected = selected.merge(muts, on=['position', 'codon'])
+        base = base[base[['position', 'codon']].apply(tuple, axis=1).isin(muts[['position', 'codon']].apply(tuple, axis=1))]
+        selected = selected[selected[['position', 'codon']].apply(tuple, axis=1).isin(muts[['position', 'codon']].apply(tuple, axis=1))]
         base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).sum()
         selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).sum()
     else:
         if not selected.empty:
+            # find the highest count codon for each position and codon pair
+            #base_label = base.groupby(['position', 'codon'], as_index=False)['count'].agg('max')
             base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+            # replace codon with highest count codon
+            #base = pd.merge(base, base_label[['position', 'codon']], on='position')
             selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False)['count'].agg('sum')
         else:
             # loop through base and groupby position
