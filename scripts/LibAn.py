@@ -74,7 +74,8 @@ def main(raw_args=None):
         while True:
             line = file.readline().strip()
             codon = file.readline().strip()
-            if not codon: break
+            if not codon:
+                break
             args.muts_list.append(''.join([i for i in line if i.isdigit()]) + '_' + codon)
         file.close()
     if args.aamuts:

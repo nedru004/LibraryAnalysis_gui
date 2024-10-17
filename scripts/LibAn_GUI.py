@@ -197,9 +197,6 @@ class Application(tk.Frame):
         self.barcode = tk.Button(self, text='Select fastq for barcode count', command=self.browse_barcode)
         self.barcode.grid(column=0)
 
-        self.output = tk.Text(self, height=10, width=60)
-        self.output.grid(column=0)
-
         self.progress = Progressbar(self, orient='horizontal', length=500, mode='determinate')
         self.progress.grid(column=0)
 
@@ -223,31 +220,39 @@ class Application(tk.Frame):
         tk.Label(self, text='Threshold (SE or count)').grid(column=1, row=7)
         self.mincount = tk.Entry(self, textvariable=tk.StringVar(self, '10'))
         self.mincount.grid(column=1, row=8)
+        self.calculateAA = tk.IntVar()
+        self.r3 = tk.Radiobutton(self, text="Calculate Codon enrichment", variable=self.calculateAA, value=0)
+        self.r3.grid(column=1, row=9)
+        self.r4 = tk.Radiobutton(self, text="Calculate AA enrichment", variable=self.calculateAA, value=1)
+        self.r4.grid(column=1, row=10)
         self.pdb_button = tk.Button(self, text='Select PDB file', command=self.browse_pdb)
-        self.pdb_button.grid(column=1, row=9)
+        self.pdb_button.grid(column=1, row=11)
         self.pdb = ''
-        tk.Label(self, text='Run').grid(column=1, row=10)
+        tk.Label(self, text='Run').grid(column=1, row=12)
         self.analyze = tk.Button(self, text='Run analysis', command=enrichment)
-        self.analyze.grid(column=1, row=11)
+        self.analyze.grid(column=1, row=13)
 
-        tk.Label(self, text='Combine Datasets', font=("Arial", 16, 'bold')).grid(column=1, row=14)
+        tk.Label(self, text='Combine Datasets', font=("Arial", 16, 'bold')).grid(column=1, row=16)
         self.combineBy = tk.IntVar()
         self.r1 = tk.Radiobutton(self, text="Combine by Counts", variable=self.combineBy, value=0)
-        self.r1.grid(column=1, row=15)
+        self.r1.grid(column=1, row=17)
         self.r2 = tk.Radiobutton(self, text="Combine by Score", variable=self.combineBy, value=1)
-        self.r2.grid(column=1, row=16)
+        self.r2.grid(column=1, row=18)
         self.multiply_check = tk.Checkbutton(self, text='Multiply Score by Count', variable=self.multiply)
-        self.multiply_check.grid(column=1, row=17)
+        self.multiply_check.grid(column=1, row=19)
         self.multiply_check.select()
         self.data = tk.Button(self, text='Input dataset', command=self.browse_data)
-        self.data.grid(column=1, row=18)
+        self.data.grid(column=1, row=20)
         self.datasets = []
         self.combine = tk.Button(self, text='Combine Datasets', command=combine)
-        self.combine.grid(column=1, row=19)
+        self.combine.grid(column=1, row=21)
 
-        tk.Label(self, text='Other', font=("Arial", 12, 'bold')).grid(column=1, row=22)
+        self.output = tk.Text(self, height=10, width=50)
+        self.output.grid(column=1, row=22)
+
+        tk.Label(self, text='Other', font=("Arial", 12, 'bold')).grid(column=1, row=24)
         self.sanger_button = tk.Button(self, text="Sanger Analysis", command=sanger_analysis)
-        self.sanger_button.grid(column=1, row=23)
+        self.sanger_button.grid(column=1, row=25)
 
     def browse_seq(self):
         self.seq_file = list(filedialog.askopenfilenames(title="Select a File"))

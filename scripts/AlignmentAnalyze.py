@@ -14,7 +14,9 @@ import matplotlib.pyplot as plt
 from plotnine import *
 import seaborn as sns
 from sklearn.linear_model import LinearRegression
-#import pymol
+import sys
+sys.path.append("/opt/homebrew/Cellar/pymol/3.0.0/libexec/lib/python3.12/site-packages")
+import pymol
 #import umap
 #import umap.plot
 
@@ -831,6 +833,7 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
     wt_nt_seq = Bio.SeqIO.read(wt_file, "fasta").upper()
     # translate wt_nt_seq to AA into a dataframe
     wt_seq = pd.DataFrame({'WT_AA': wt_nt_seq.translate()}).T
+    # first filter for designed mutations
     if muts_file:
         # filter base for only codons in muts_file
         # read in muts_file as text
@@ -856,14 +859,8 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
         base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).sum()
         selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).sum()
     else:
-        if not selected.empty:
-            # find the highest count codon for each position and codon pair
-            #base_label = base.groupby(['position', 'codon'], as_index=False)['count'].agg('max')
-            base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
-            # replace codon with highest count codon
-            #base = pd.merge(base, base_label[['position', 'codon']], on='position')
-            selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False)['count'].agg('sum')
-        else:
+        # combine codons into one dataframe
+        if selected.empty:
             # loop through base and groupby position
             tmp_base = base[0]
             tmp_base = tmp_base.groupby([x for x in tmp_base.columns if x not in ['count', 'codon']], as_index=False)['count'].agg('sum')
@@ -875,17 +872,43 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
     # combine into one dataframe
     if 'position' in list(base.columns):
         if not selected.empty:
-            df = pd.merge(base, selected, left_on=['position', 'AA'], right_on=['position', 'AA'], suffixes=('_base', '_select'), how='outer')
+            # start by calculating enrichment for each codon
+            if not app.calculateAA.get():
+                df_codon = pd.merge(base, selected, left_on=['position', 'codon'], right_on=['position', 'codon'], suffixes=('_base', '_select'), how='outer')
+                df_codon = df_codon.fillna(0)
+                # by AA position
+                for i in df_codon.position.unique():
+                    selection = df_codon.loc[df_codon.position == i, :]
+                    inp_count = sum(selection.loc[:, 'count_base'])+1
+                    sel_count = sum(selection.loc[:, 'count_select'])+1
+                    for select, row in selection.iterrows():
+                        inp_score = selection.loc[select, 'count_base'] + 1
+                        sel_score = selection.loc[select, 'count_select'] + 1
+                        score = math.log(sel_score / sel_count) - math.log(inp_score / inp_count)
+                        se = math.sqrt((1 / sel_score) + (1 / inp_score) + (1 / sel_count) + (1 / inp_count))
+                        df_codon.loc[select, 'base_frequency'] = inp_score / inp_count
+                        df_codon.loc[select, 'select_frequency'] = sel_score / sel_count
+                        df_codon.loc[select, 'score'] = score
+                        df_codon.loc[select, 'std_error'] = se
+                df_codon.to_csv(name.split('.csv')[0]+"_codon-results.csv", index=False)
+            base = base.groupby([x for x in base.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+            # separate codon string into groups of 3
+            base['codon'] = base['codon'].apply(lambda x: [x[i:i+3] for i in range(0, len(x), 3)])
+            # convert codon list to comma separated string
+            base['codon'] = base['codon'].apply(lambda x: ','.join(x))
+            selected = selected.groupby([x for x in selected.columns if x not in ['count', 'codon']], as_index=False).agg('sum')
+            # separate codon string into groups of 3
+            selected['codon'] = selected['codon'].apply(lambda x: [x[i:i+3] for i in range(0, len(x), 3)])
+            # convert codon list to comma separated string
+            selected['codon'] = selected['codon'].apply(lambda x: ','.join(x))
+            df = pd.merge(base, selected, left_on=['position', 'AA'], right_on=['position', 'AA'],
+                          suffixes=('_base', '_select'), how='outer')
             df = df.fillna(0)
-            percentage_reads = list(range(0, len(df), int(len(df) / 99) + (len(df) % 99 > 0)))
-            root.update_idletasks()
-            app.progress['value'] = 0
-            root.update()
             # by AA position
             for i in df.position.unique():
                 selection = df.loc[df.position == i, :]
-                inp_count = sum(selection.loc[:, 'count_base'])+1
-                sel_count = sum(selection.loc[:, 'count_select'])+1
+                inp_count = sum(selection.loc[:, 'count_base']) + 1
+                sel_count = sum(selection.loc[:, 'count_select']) + 1
                 for select, row in selection.iterrows():
                     inp_score = selection.loc[select, 'count_base'] + 1
                     sel_score = selection.loc[select, 'count_select'] + 1
@@ -895,11 +918,7 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
                     df.loc[select, 'select_frequency'] = sel_score / sel_count
                     df.loc[select, 'score'] = score
                     df.loc[select, 'std_error'] = se
-                    read_count += 1
-                    if read_count in percentage_reads:
-                        root.update_idletasks()
-                        app.progress['value'] += 1
-                        root.update()
+            df.to_csv(name, index=False)
         else:
             tmp_df = pd.DataFrame()
             linear_regressor = LinearRegression()
@@ -922,8 +941,9 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
                         fit = linear_regressor.fit(x.reshape(-1, 1), y.reshape(-1, 1))
                         tmp_df.loc[irow, 'score'] = fit.coef_[0][0]
             df = pd.merge(df, tmp_df, left_index=True, right_index=True)
-        df.to_csv(name, index=False)
+            df.to_csv(name, index=False)
         df['mutation'] = df['position'].astype(str) + '_' + df['AA']
+
         # create matrix
         if not selected.empty:
             df = df.loc[(df['count_base'] > mincount) | (df['count_select'] > mincount), ]
@@ -969,8 +989,9 @@ def calc_enrichment(app, root, base, selected, name, mincount, wt_file, structur
             quartile = matrix.loc['AveragePosition'].quantile([0.10, 0.90])
             average = matrix.loc['AveragePosition'].mean()
             map_structure(structure_file, matrix, quartile[0.1], quartile[0.9], average, name)
+
+    # calculate score based on variant
     if 'position' not in list(base.columns):
-        # by variant
         df = pd.merge(base, selected, left_on=['mutation'], right_on=['mutation'],
                       suffixes=('_base', '_select'), how='outer')
         df = df.fillna(0)
