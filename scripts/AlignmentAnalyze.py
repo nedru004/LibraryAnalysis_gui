@@ -305,15 +305,11 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                         if app.muts:
                             for i, mut in enumerate(mutation):
                                 # only record if mutation is in the design list
-                                compare_mut = [x for x in app.muts_list if mut.strip('*') in x]
+                                compare_mut = [x for x in app.muts_list if mut.strip('*') == x[:len(mut.strip('*'))]]
                                 if compare_mut:
                                     # if a synonymous mutation repeats?
                                     test_mut = compare_mut[0]
-                                    if '_' not in test_mut:
-                                        try:
-                                            mutation_dict[mut] += 1  # simple dictionary of mutations
-                                        except KeyError:
-                                            mutation_dict[mut] = 1
+                                    # first test mutations that only have a single nucleotide change and are paired with a synonymous mutation
                                     # example of a mutation paired with a synonymous mutation (137_TTT-1_CAT)
                                     if len(test_mut) > 8:
                                         if '-1' in test_mut and i > 0:
@@ -328,6 +324,11 @@ def david_call_variants(sam_file, start, end, wt, outfile, app):
                                                     mutation_dict[mut] += 1  # simple dictionary of mutations
                                                 except KeyError:
                                                     mutation_dict[mut] = 1
+                                    else:
+                                        try:
+                                            mutation_dict[mut] += 1  # simple dictionary of mutations
+                                        except KeyError:
+                                            mutation_dict[mut] = 1
                         else:
                             for mut in mutation:
                                 try:
